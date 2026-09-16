@@ -79,22 +79,95 @@ Direct playback does not bypass the Jellyfin session API. Players continue to re
 
 Because playback metadata still includes the item ID and play session ID, resume points, scrobbling, webhooks, and watched state remain available even when the video bytes come directly from the remote source.
 
-### Development
+## Building and Running
 
-Install Cargo Make and the Dioxus CLI:
+### 1. Docker (Recommended)
 
-```sh
-cargo install --force cargo-make
-cargo install dioxus-cli
-```
-
-Then configure and start the development environment:
+To build and run this modified version with Docker, use the included multi-stage build. You do **not** need Rust, Node, or Dioxus installed on your host system—Docker will compile `jellyfin-web`, the admin dashboard, and the server binary inside build containers:
 
 ```sh
-cp .env.example .env
-cargo make jellyfin-web
-cargo make dev
+# Build from source and run in the background
+docker compose up -d --build
 ```
+
+#### Docker Compose Configuration (`docker-compose.yml`)
+
+```yaml
+services:
+  remux:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.multistage
+    image: remux:local
+    container_name: remux
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./data:/data
+    environment:
+      - PORT=3000
+      - DATA_DIR=/data
+```
+
+#### Important: Docker Networking with AIOStreams for Direct Play
+
+When Remux and AIOStreams are both running in Docker:
+
+- In the Remux Dashboard (`http://<server-ip>:3000/admin`), configure the AIOStreams add-on using your **host's LAN IP or public domain**:
+  ```
+  http://192.168.1.X:3000/manifest.json
+  ```
+  _(Do not use internal Docker aliases like `http://aiostreams:3000/manifest.json`)_.
+- **Why**: Remux automatically rewrites internal container URLs (`aiostreams:...`) to match the manifest URL's origin. Using your LAN IP or domain ensures external players (Infuse, Swiftfin, Strand, Fusion, TV apps) on your network receive a reachable link to stream from directly.
+
+---
+
+### 2. Local / Native Development Build
+
+To build and develop directly on your host:
+
+#### Prerequisites
+
+- **Rust toolchain** (1.80+): `rustup default stable`
+- **Node.js** (v20+): For building `jellyfin-web`
+- **Cargo Make**: `cargo install --force cargo-make`
+- **Dioxus CLI** (0.7.9): `cargo install dioxus-cli --version 0.7.9 --locked`
+
+#### Setup & Build
+
+1. Copy the example environment file:
+
+   ```sh
+   cp .env.example .env
+   ```
+
+2. Checkout and build `jellyfin-web`:
+
+   ```sh
+   cargo make jellyfin-web
+   ```
+
+3. Build the Dioxus dashboard:
+
+   ```sh
+   cargo make build-desktop-dash
+   ```
+
+4. Build or run the server:
+
+   ```sh
+   # Run development server with live reload
+   cargo make dev
+
+   # Or build release binary
+   cargo build --release -p remux-server
+   ```
+
+5. (Optional) Bundle desktop application (macOS `.dmg`, Linux `.deb`, Windows `.exe`):
+   ```sh
+   cargo make bundle-desktop
+   ```
 
 ## Contributing
 
