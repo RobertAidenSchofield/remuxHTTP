@@ -975,13 +975,10 @@ async fn videos_stream_inner(
     if q.static_
         .unwrap_or(false)
     {
-        // If the producing addon has http_redirect_stream enabled, issue a 302
-        // directly to the stream URL instead of proxying bytes through remux —
-        // unless the URL's host is only reachable from remux's own network, in
-        // which case a client redirected there would just fail to connect.
-        if let (Some(addon_id), crate::stream::StreamDescriptor::Http { url, .. }) =
-            (si.addon_id, &descriptor)
-        {
+        // Direct play for HTTP streams: issue a 302 directly to the stream URL instead
+        // of proxying bytes through remux — unless the URL's host is only reachable from
+        // remux's own network, in which case a client redirected there would fail to connect.
+        if let crate::stream::StreamDescriptor::Http { url, .. } = &descriptor {
             // Fail closed: a URL we can't parse, or one with no host, is not
             // confirmed reachable by the client either — treat it as internal
             // rather than defaulting to allowing the redirect.
@@ -992,17 +989,7 @@ async fn videos_stream_inner(
                         .map(crate::stream::is_internal_host)
                 })
                 .unwrap_or(true);
-            if !host_is_internal
-                && state
-                    .ctx
-                    .addons
-                    .get(addon_id)
-                    .map(|a| {
-                        a.row
-                            .http_redirect_stream
-                    })
-                    .unwrap_or(false)
-            {
+            if !host_is_internal {
                 return Ok(axum::response::Redirect::temporary(url).into_response());
             }
         }
@@ -1591,6 +1578,50 @@ mod tests {
             stream_url,
             "redirect Location must point directly to the source stream URL"
         );
+    }
+
+    #[tokio::test]
+    async fn playbackinfo_returns_direct_http_url_for_remote_stream() {
+        use crate::stream;
+        use chrono::Utc;
+
+        let (server, guard, token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let now = Utc::now().naive_utc();
+        let stream_url = "https://cdn.example.com/movie.mp4";
+
+        let mut media = crate::db::Media {
+            title: "Direct Remote URL Test".to_string(),
+            kind: crate::db::MediaKind::Stream,
+            stream_info: Some(stream::StreamInfo {
+                descriptor: stream::StreamDescriptor::http(stream_url),
+                ..Default::default()
+            }),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        media.save(&ctx.db).await.unwrap();
+
+        let resp = server
+            .post(&format!("/Items/{}/PlaybackInfo", media.id))
+            .add_query_params([("ApiKey", &token)])
+            .json(&serde_json::json!({
+                "DeviceProfile": {
+                    "DirectPlayProfiles": [
+                        { "Container": "mp4", "Type": "Video" }
+                    ]
+                }
+            }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: api::PlaybackInfoResponse = resp.json();
+        assert!(!body.media_sources.is_empty());
+        let source = &body.media_sources[0];
+        assert_eq!(source.protocol, api::MediaProtocol::Http);
+        assert!(source.is_remote);
+        assert_eq!(source.path.as_deref(), Some(stream_url));
     }
 
     /// A stream URL whose host is only reachable from remux's own network

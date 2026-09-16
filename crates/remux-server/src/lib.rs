@@ -18,8 +18,8 @@ use axum::{
 use axum_anyhow::{ApiError, ApiResult, on_error, set_expose_errors};
 pub mod result_ext;
 use chrono::{Duration, Utc, prelude::*};
-use config;
-use futures::future::BoxFuture;
+pub mod config;
+pub use config::DynamicRegexConfig;
 use futures_util::StreamExt;
 use http::Uri;
 use itertools::Itertools;
@@ -338,6 +338,10 @@ pub async fn init_app(
         ws_tx: ws_tx.clone(),
     });
 
+    let (regex_service, dynamic_regex) =
+        services::regex_sync::RegexSyncService::new(config.dynamic_regex.clone());
+    let _regex_worker = Arc::new(regex_service).spawn_sync_worker();
+
     let mut ctx = AppContext {
         config,
         db: conn.clone(),
@@ -353,6 +357,7 @@ pub async fn init_app(
         web_paths,
         addons,
         signals,
+        dynamic_regex,
         started_at: Utc::now(),
     };
     ctx.signals
@@ -463,6 +468,7 @@ pub struct AppContext {
     pub web_paths: Option<FilesystemPaths>,
     pub addons: addons::AddonService,
     pub signals: signals::Signals,
+    pub dynamic_regex: Arc<arc_swap::ArcSwap<services::regex_sync::DynamicRegexState>>,
     /// When this server process started.
     pub started_at: chrono::DateTime<chrono::Utc>,
 }
@@ -590,6 +596,8 @@ pub struct Config {
     pub activity_log_retention_days: u32,
     #[serde(default = "default_jellyfin_version")]
     pub jellyfin_version: String,
+    #[serde(default)]
+    pub dynamic_regex: DynamicRegexConfig,
 }
 
 fn default_jellyfin_version() -> String {
@@ -694,6 +702,16 @@ impl Config {
                     .into_owned(),
             );
         }
+        if self.dynamic_regex.fallback_cache_path.is_empty() {
+            self.dynamic_regex.fallback_cache_path = self
+                .data_dir
+                .join("regex_cache.json")
+                .to_string_lossy()
+                .into_owned();
+        }
+        if self.dynamic_regex.sync_interval_secs == 0 {
+            self.dynamic_regex.sync_interval_secs = 3600;
+        }
         self
     }
 }
@@ -714,6 +732,7 @@ impl Default for Config {
             remuxdb_url: Some("https://remuxdb.1632022.xyz".to_string()),
             activity_log_retention_days: default_activity_log_retention_days(),
             jellyfin_version: default_jellyfin_version(),
+            dynamic_regex: DynamicRegexConfig::default(),
         }
         .resolve()
     }

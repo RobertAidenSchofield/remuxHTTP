@@ -3,6 +3,7 @@ pub mod media_tracker;
 pub(crate) mod resolve;
 pub(crate) mod stream_service;
 pub mod stremio;
+pub mod regex_sync;
 
 pub use resolve::MediaResolveService;
 pub(crate) use resolve::ResolvedItem;

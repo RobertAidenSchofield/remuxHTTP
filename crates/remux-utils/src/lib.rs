@@ -128,3 +128,5 @@ pub fn merge_vec<T>(dst: &mut Vec<T>, src: Vec<T>, replace: bool) {
 
 pub mod secret;
 pub use secret::Secret;
+
+pub mod regex;

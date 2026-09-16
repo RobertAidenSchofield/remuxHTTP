@@ -343,7 +343,18 @@ impl From<db::Media> for api::MediaSourceInfo {
             source: probe_source,
         });
 
-        let path = Some({
+        let reachable_http_url = descriptor
+            .and_then(|d| d.as_http_url())
+            .filter(|url| {
+                url::Url::parse(url)
+                    .ok()
+                    .and_then(|u| u.host_str().map(|h| !crate::stream::is_internal_host(h)))
+                    .unwrap_or(false)
+            });
+
+        let (path, is_remote, protocol) = if let Some(url) = reachable_http_url {
+            (Some(url.to_string()), true, api::MediaProtocol::Http)
+        } else {
             let stem = source
                 .stream_info
                 .as_ref()
@@ -356,13 +367,12 @@ impl From<db::Media> for api::MediaSourceInfo {
                         .file_stem()
                         .and_then(|s| s.to_str())
                 });
-            match stem {
+            let p = match stem {
                 Some(s) => format!("/remux/{}/{}", source.id, s),
                 None => format!("/remux/{}", source.id),
-            }
-        });
-        let is_remote = false;
-        let protocol = api::MediaProtocol::File;
+            };
+            (Some(p), false, api::MediaProtocol::File)
+        };
 
         let client_id = source
             .group_id
@@ -591,15 +601,28 @@ pub fn stream_into_media_source_info(
     stream: stremio::Stream,
 ) -> api::MediaSourceInfo {
     let id = get_uuid();
+    let is_reachable_http = stream.url.as_ref().map_or(false, |u| {
+        (u.starts_with("http://") || u.starts_with("https://"))
+            && url::Url::parse(u)
+                .ok()
+                .and_then(|parsed| parsed.host_str().map(|h| !crate::stream::is_internal_host(h)))
+                .unwrap_or(false)
+    });
+    let (protocol, is_remote) = if is_reachable_http {
+        (api::MediaProtocol::Http, true)
+    } else {
+        (api::MediaProtocol::File, false)
+    };
+
     api::MediaSourceInfo {
         id: id.clone(),
         e_tag: id.clone(),
         path: stream.url,
-        protocol: api::MediaProtocol::File,
+        protocol,
         supports_transcoding: false,
         supports_direct_stream: true,
         supports_direct_play: true,
-        is_remote: false,
+        is_remote,
         name: stream
             .name
             .clone(),

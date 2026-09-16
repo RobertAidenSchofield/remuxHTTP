@@ -4,161 +4,99 @@
 
 <div align="center">
   <h1><b>Remux</b></h1>
-  <p><i>self-hosted media server with a Jellyfin-compatible API</i></p>
-<a href="https://discord.gg/rEbhk4RBhs">
-    <img src="https://img.shields.io/badge/Talk%20on-Discord-brightgreen">
-</a>
+  <p><i>Self-hosted media server with a Jellyfin-compatible API</i></p>
+  <a href="https://discord.gg/rEbhk4RBhs">
+    <img src="https://img.shields.io/badge/Talk%20on-Discord-brightgreen" alt="Talk on Discord">
+  </a>
 </div>
 
 ---
 
-Remux is a Jellyfin-compatible media server that brings Stremio add-ons, local files, and WebDAV sources together under one roof. Music streams from its own dedicated pipeline with support for remote sources. Use any Jellyfin client to browse, search, and play without any client changes. Written in Rust.
+## About this project
 
----
+This project is a fork of [Remux](https://github.com/lostb1t/remux), a Rust media server that combines Stremio add-ons, local files, WebDAV sources, torrents, and music providers behind a Jellyfin-compatible API.
+
+The fork keeps Remux's goal of working with existing Jellyfin clients while changing how reachable HTTP streams are delivered: remote players receive the original stream URL and connect to the source directly. Remux remains responsible for metadata, session events, progress, resume points, and watched state, but it does not relay the video bytes when direct playback is safe.
 
 ## Features
 
-- **Works with your Jellyfin clients**  
-  Infuse, Swiftfin, Jellyfin for Android, and any other Jellyfin-compatible client works without changes.
+- **Jellyfin-compatible clients**: Use Infuse, Swiftfin, Jellyfin for Android, Jellyfin Web, and other compatible clients without client changes.
+- **Multiple content sources**: Combine Stremio add-ons, local files, WebDAV servers, torrents, and remote music sources in one library.
+- **Direct remote playback**: Reachable HTTP streams are returned to players as HTTP media sources so the player connects directly to the CDN, add-on, or debrid provider.
+- **Safe fallback streaming**: Local files, torrents, internal hosts, and other sources continue through Remux's streaming path when a direct URL cannot be safely exposed.
+- **Built-in torrent streaming**: Stream torrents without running a separate torrent client or downloading the complete file first.
+- **Probe data for streams**: Audio and subtitle track metadata is available for streamed content through [RemuxDB](https://remuxdb.1632022.xyz).
+- **Library filtering**: Build dynamic libraries using tags, catalogs, popularity, release year, and per-user visibility rules.
+- **Playback tracking**: Continue watching, resume points, watched state, and play counts remain synchronized across clients.
+- **User management**: Import users and data from an existing Jellyfin server.
+- **Desktop app**: Run the server from a macOS, Linux, or Windows tray application without Docker or a terminal.
+- **Custom dashboard**: Configure the server through a built-in admin interface.
+- **IPTV support**
 
-- **Multiple content sources**  
-  Stream from Stremio add-ons, local files, WebDAV servers, or torrents. Mix and match across a single library.
+## Direct streaming architecture
 
-- **Built-in torrent streaming**  
-  Stream directly from torrents without a separate client. No downloads required.
+### Why the fork changes playback
 
-- **Independent music pipeline**  
-  Music is not tied to Stremio and streams from its own sources, including remote ones.
+The original proxy flow made Remux download every remote video and upload it again to the player. That added bandwidth, CPU usage, latency, and buffering on the Remux host, and prevented clients such as Infuse, Fusion, and Strand from using their native remote-streaming behavior.
 
-- **Probe data for streams**  
-  Audio and subtitle track selection works out of the box for streamed content. Track metadata is sourced from [RemuxDB](https://remuxdb.1632022.xyz) so clients see the same experience as local files.
+For an externally reachable HTTP stream, the playback flow is now:
 
-- **Powerful library filtering**  
-  Build libraries dynamically: filter by tags, catalogs, popularity, release year, and more. Exclude content per-user or scope libraries to specific audiences without duplicating sources.
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Player as Jellyfin Player
+    participant Remux as Remux Server
+    participant Source as Remote Source
 
-- **Playback tracking**  
-  Progress syncs across clients with continue watching support.
+    Player->>Remux: POST /Items/{id}/PlaybackInfo
+    Remux-->>Player: MediaSourceInfo with source URL
+    Player->>Source: GET source URL
+    Source-->>Player: Video bytes directly
 
-- **User management**  
-  Import users and data from an existing Jellyfin server to get started quickly.
-
-- **Desktop app**  
-  Single install, no Docker or terminal required. The server runs in the background as a tray app.
-
-- **Custom dashboard**  
-  A built-in admin interface designed for this workflow.
-
-- **IPTV Support**
-
-
-## Quick Start
-
-### Desktop
-
-Download the latest release for your platform:
-
-- [macOS (Apple Silicon)](https://github.com/lostb1t/remux/releases/latest/download/remux-desktop-macos-aarch64.dmg)
-- [Linux (x86_64)](https://github.com/lostb1t/remux/releases/latest/download/remux-desktop-linux-x86_64.deb)
-- [Windows (x86_64)](https://github.com/lostb1t/remux/releases/latest/download/remux-desktop-windows-x86_64.zip)
-
-### Docker
-
-```yml
-version: "3"
-services:
-  remux:
-    image: ghcr.io/lostb1t/remux:latest # or nightly
-    ports:
-      - "3000:3000"
-    volumes:
-      - /remux/data:/data
+    loop Every 5-10 seconds
+        Player->>Remux: POST /sessions/playing/progress
+    end
+    Player->>Remux: POST /sessions/playing/stopped
 ```
+
+When a client still requests `/videos/{id}/stream`, Remux returns a temporary HTTP 302 redirect for a safe external HTTP source. This preserves compatibility with clients that use the Jellyfin stream endpoint while still avoiding a data relay.
+
+### URL safety
+
+Remux only forwards HTTP URLs that players can reasonably reach. Internal and private addresses, including loopback, LAN, link-local, CGNAT, Docker, `.local`, `.internal`, and `.lan` hosts, remain on the fallback proxy path.
+
+Some add-ons return container-only URLs. For AIOStreams, Remux rewrites those URLs to the public origin from the add-on's `manifest_url` before exposing them to a player.
+
+### Progress tracking still works
+
+Direct playback does not bypass the Jellyfin session API. Players continue to report playback independently of the video connection:
+
+| Endpoint                          | Purpose                                        |
+| --------------------------------- | ---------------------------------------------- |
+| `POST /sessions/playing`          | Register playback and its play session.        |
+| `POST /sessions/playing/progress` | Update `PositionTicks` and live session state. |
+| `POST /sessions/playing/stopped`  | Persist the final position and watched state.  |
+
+Because playback metadata still includes the item ID and play session ID, resume points, scrobbling, webhooks, and watched state remain available even when the video bytes come directly from the remote source.
 
 ### Development
 
-Install cargo make
+Install Cargo Make and the Dioxus CLI:
 
-```
+```sh
 cargo install --force cargo-make
-```
-
-Install the dioxus cli
-
-```
 cargo install dioxus-cli
 ```
 
-Copy env example
+Then configure and start the development environment:
 
-```
+```sh
 cp .env.example .env
-```
-
-Build jellyfin web
-
-```
 cargo make jellyfin-web
-```
-
-run
-
-```
 cargo make dev
 ```
 
-### ❤️ Support the Project
+## Contributing
 
-- ⭐ **[Star the repository](https://github.com/lostb1t/remux)** on GitHub.
-- 🤝 **Contribute**: Report issues, suggest features, or submit pull requests.
-- ☕ **Donate**:
-  - **[Ko-fi](https://ko-fi.com/lostb1t)**
+Issues, feature requests, and pull requests are welcome. Please test changes, explain behavior in human-written issue and pull request descriptions, and disclose significant AI-assisted contributions. Contributors remain responsible for understanding, reviewing, and testing everything they submit.
 
-### AI policy
-
-> [!IMPORTANT]
-> Use AI as much as you want, but understand every line, verify it works, communicate as a human, and disclose significant AI-generated contributions.
-
-We welcome contributions created with the help of AI tools such as GitHub Copilot, Claude, ChatGPT, Cursor, and similar assistants. AI is a tool; contributors remain responsible for everything they submit.  
-
-#### AI-assisted code is allowed
-
-You may use AI to:
-
-* Generate code
-* Draft tests
-* Research the codebase
-* Suggest fixes and improvements
-* Help write documentation
-
-All contributions must still meet the project’s quality standards and pass review.  
-
-#### You are responsible for your contributions
-
-Before submitting a pull request, you must:
-
-* Understand the code you are submitting
-* Be able to explain why it works
-* Test your changes
-* Review and edit any AI-generated content
-
-Do not submit code you do not understand.  
-
-#### Communication must be human
-
-When interacting with maintainers and reviewers:
-
-* Write your own PR descriptions
-* Write your own review responses
-* Be prepared to discuss your changes
-
-AI may help you draft a response, but maintainers expect to communicate with the contributor, not an AI assistant.  
-
-#### Disclose when AI was used
-
-If AI was used to generate a significant portion of an issue, PR, or the code it contains, please say so in the submission. A short note in the PR description is enough — for example, "The initial implementation was drafted with Claude and then reviewed and edited by me."
-
-Issues and pull requests that appear to be AI-generated but do not disclose it may be closed without review. Contributors who repeatedly submit undisclosed AI content, or who ignore this policy, may be blocked from contributing.
-
-### Keep It Human
-
-We're grateful for all genuine contributions, whether AI-assisted or not. The key is human oversight and understanding. Thank you for helping keep Actual focused on what matter

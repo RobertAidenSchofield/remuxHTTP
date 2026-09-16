@@ -10,6 +10,7 @@ nutype = { version = "0.6", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, optional = true }
+regex = "1"
 
 [features]
 # Lets a Secret be a database column. Enabled by remux-server; a standalone

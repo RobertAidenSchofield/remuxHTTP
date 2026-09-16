@@ -569,23 +569,42 @@ impl StreamService {
             // This path previously always dropped it, even when the addon
             // supplied behaviorHints.filename and it was sitting right
             // there in effective_stream.stream_info.
-            let stem = effective_stream
+            let reachable_http_url = effective_stream
                 .stream_info
                 .as_ref()
-                .and_then(|si| {
-                    si.filename
-                        .as_deref()
-                })
-                .and_then(|f| {
-                    std::path::Path::new(f)
-                        .file_stem()
-                        .and_then(|s| s.to_str())
+                .and_then(|si| si.descriptor.as_http_url())
+                .filter(|url| {
+                    url::Url::parse(url)
+                        .ok()
+                        .and_then(|u| u.host_str().map(|h| !crate::stream::is_internal_host(h)))
+                        .unwrap_or(false)
                 });
-            source.path = Some(match stem {
-                Some(s) => format!("/remux/{}/{}", effective_stream.id, s),
-                None => format!("/remux/{}", effective_stream.id),
-            });
-            source.is_remote = false;
+
+            if let Some(url) = reachable_http_url {
+                source.path = Some(url.to_string());
+                source.protocol = api::MediaProtocol::Http;
+                source.is_remote = true;
+                source.supports_direct_play = true;
+                source.supports_direct_stream = true;
+            } else {
+                let stem = effective_stream
+                    .stream_info
+                    .as_ref()
+                    .and_then(|si| {
+                        si.filename
+                            .as_deref()
+                    })
+                    .and_then(|f| {
+                        std::path::Path::new(f)
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                    });
+                source.path = Some(match stem {
+                    Some(s) => format!("/remux/{}/{}", effective_stream.id, s),
+                    None => format!("/remux/{}", effective_stream.id),
+                });
+                source.is_remote = false;
+            }
             // Re-apply binge-group headers — ffmpeg probing produces a fresh
             // MediaSourceInfo and would otherwise drop provider hints. Must
             // preserve whatever probe_source tag probe_stream() already set
