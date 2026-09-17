@@ -1619,7 +1619,7 @@ mod tests {
         media.save(&ctx.db).await.unwrap();
 
         let resp = server
-            .post(&format!("/Items/{}/PlaybackInfo", media.id))
+            .post(&format!("/items/{}/playbackinfo", media.id))
             .add_query_params([("ApiKey", &token)])
             .json(&serde_json::json!({
                 "DeviceProfile": {
