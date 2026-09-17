@@ -1631,10 +1631,10 @@ mod tests {
             .await;
 
         resp.assert_status_ok();
-        let body: api::PlaybackInfoResponse = resp.json();
+        let body: crate::api::PlaybackInfoResponse = resp.json();
         assert!(!body.media_sources.is_empty());
         let source = &body.media_sources[0];
-        assert_eq!(source.protocol, api::MediaProtocol::Http);
+        assert_eq!(source.protocol, crate::api::MediaProtocol::Http);
         assert!(source.is_remote);
         assert_eq!(source.path.as_deref(), Some(stream_url));
     }
