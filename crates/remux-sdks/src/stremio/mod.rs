@@ -220,6 +220,16 @@ where
     }))
 }
 
+pub(crate) fn apply_client_ip_headers(map: &mut http::HeaderMap, client_ip: Option<&str>) {
+    if let Some(ip) = client_ip {
+        if let Ok(val) = http::HeaderValue::from_str(ip) {
+            map.insert("X-Forwarded-For", val.clone());
+            map.insert("X-Real-IP", val.clone());
+            map.insert("CF-Connecting-IP", val);
+        }
+    }
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize)]
 pub struct CatalogEndpoint {
@@ -231,7 +241,8 @@ pub struct CatalogEndpoint {
     pub search: Option<String>,
     pub genre: Option<String>,
     pub skip: Option<u32>,
-    //pub extra: Option<HashMap<String, String>>,
+    #[serde(skip)]
+    pub client_ip: Option<String>,
 }
 
 impl Endpoint for CatalogEndpoint {
@@ -259,6 +270,12 @@ impl Endpoint for CatalogEndpoint {
         ep.push_str(".json");
         ep
     }
+
+    fn headers(&self) -> http::HeaderMap {
+        let mut map = http::HeaderMap::new();
+        apply_client_ip_headers(&mut map, self.client_ip.as_deref());
+        map
+    }
 }
 
 #[skip_serializing_none]
@@ -274,6 +291,7 @@ pub struct MetaEndpoint {
     pub id: String,
     pub season: Option<i64>,
     pub episode: Option<i64>,
+    pub client_ip: Option<String>,
 }
 
 impl Endpoint for MetaEndpoint {
@@ -301,6 +319,12 @@ impl Endpoint for MetaEndpoint {
         }
         format!("/meta/{}/{}.json", self.media_type, id)
     }
+
+    fn headers(&self) -> http::HeaderMap {
+        let mut map = http::HeaderMap::new();
+        apply_client_ip_headers(&mut map, self.client_ip.as_deref());
+        map
+    }
 }
 
 #[skip_serializing_none]
@@ -316,6 +340,7 @@ pub struct SubtitlesEndpoint {
     pub imdb_id: String,
     pub season: Option<i64>,
     pub episode: Option<i64>,
+    pub client_ip: Option<String>,
 }
 
 impl Endpoint for SubtitlesEndpoint {
@@ -329,6 +354,12 @@ impl Endpoint for SubtitlesEndpoint {
                 .clone(),
         };
         format!("/subtitles/{}/{}.json", self.media_type, id)
+    }
+
+    fn headers(&self) -> http::HeaderMap {
+        let mut map = http::HeaderMap::new();
+        apply_client_ip_headers(&mut map, self.client_ip.as_deref());
+        map
     }
 }
 
@@ -545,6 +576,7 @@ impl Meta {
                         .clone(),
                     season: None,
                     episode: None,
+                    client_ip: None,
                 }
                 .with_cache(std::time::Duration::from_secs(3600)),
             )
@@ -841,6 +873,7 @@ impl Episode {
 pub struct StreamEndpoint {
     pub kind: MediaType,
     pub id: String,
+    pub client_ip: Option<String>,
 }
 
 impl Endpoint for StreamEndpoint {
@@ -856,6 +889,7 @@ impl Endpoint for StreamEndpoint {
             http::header::USER_AGENT,
             http::HeaderValue::from_static("AIOStreams/1.0"),
         );
+        apply_client_ip_headers(&mut map, self.client_ip.as_deref());
         map
     }
 }
@@ -1196,5 +1230,29 @@ mod tests {
                 end: 2025
             }
         );
+    }
+
+    #[test]
+    fn stream_endpoint_applies_client_ip_headers() {
+        let ep_with_ip = StreamEndpoint {
+            kind: MediaType::Movie,
+            id: "tt123456".to_string(),
+            client_ip: Some("203.0.113.45".to_string()),
+        };
+        let headers = ep_with_ip.headers();
+        assert_eq!(headers.get("X-Forwarded-For").unwrap(), "203.0.113.45");
+        assert_eq!(headers.get("X-Real-IP").unwrap(), "203.0.113.45");
+        assert_eq!(headers.get("CF-Connecting-IP").unwrap(), "203.0.113.45");
+        assert_eq!(headers.get(http::header::USER_AGENT).unwrap(), "AIOStreams/1.0");
+
+        let ep_no_ip = StreamEndpoint {
+            kind: MediaType::Movie,
+            id: "tt123456".to_string(),
+            client_ip: None,
+        };
+        let headers_no_ip = ep_no_ip.headers();
+        assert!(headers_no_ip.get("X-Forwarded-For").is_none());
+        assert!(headers_no_ip.get("X-Real-IP").is_none());
+        assert!(headers_no_ip.get("CF-Connecting-IP").is_none());
     }
 }

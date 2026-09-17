@@ -44,7 +44,7 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       version: pr-${{ inputs.pr_number }}
-      docker_tags: "-t ghcr.io/lostb1t/remux:pr-${{ inputs.pr_number }}"
+      docker_tags: '-t ghcr.io/robertaidenschofield/remuxhttp:pr-${{ inputs.pr_number }}'
       desktop: false
       ref: ${{ needs.resolve-ref.outputs.sha }}
     secrets: inherit
@@ -62,7 +62,7 @@ jobs:
         with:
           issue-number: ${{ inputs.pr_number }}
           comment-author: github-actions[bot]
-          body-includes: "<!-- pr-docker -->"
+          body-includes: '<!-- pr-docker -->'
 
       - name: Post or update comment
         uses: peter-evans/create-or-update-comment@v4
@@ -75,7 +75,7 @@ jobs:
             **Docker image** built for this PR and pushed to GitHub Container Registry.
 
             ```sh
-            docker pull ghcr.io/lostb1t/remux:pr-${{ inputs.pr_number }}
+            docker pull ghcr.io/robertaidenschofield/remuxhttp:pr-${{ inputs.pr_number }}
             ```
 
             Image will be removed when this PR is closed or merged.
@@ -86,15 +86,15 @@ jobs:
     steps:
       - name: Delete PR Docker image
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
         run: |
-          VERSION_ID=$(gh api /user/packages/container/remux/versions \
+          VERSION_ID=$(gh api /user/packages/container/remuxhttp/versions \
             --jq ".[] | select(.metadata.container.tags[] == \"pr-${PR_NUMBER}\") | .id" \
             2>/dev/null | head -1)
           if [ -n "$VERSION_ID" ]; then
-            gh api --method DELETE /user/packages/container/remux/versions/$VERSION_ID
-            echo "Removed ghcr.io/lostb1t/remux:pr-${PR_NUMBER}"
+            gh api --method DELETE /user/packages/container/remuxhttp/versions/$VERSION_ID
+            echo "Removed ghcr.io/robertaidenschofield/remuxhttp:pr-${PR_NUMBER}"
           else
             echo "No image found for pr-${PR_NUMBER}, skipping"
           fi

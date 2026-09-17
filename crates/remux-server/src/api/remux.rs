@@ -604,7 +604,7 @@ pub async fn remux_streams(
 #[get("/remux/meta/{kind}/{id}")]
 pub async fn remux_meta(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path((kind, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse> {
     let media_type = match kind.as_str() {
@@ -654,7 +654,7 @@ pub async fn remux_meta(
     };
 
     match svc
-        .get_meta(media_type, id)
+        .get_meta(media_type, id, session.device.remote_ip.as_deref())
         .await
     {
         Ok(meta) => Ok(Json::<remux_sdks::stremio::Meta>(meta).into_response()),

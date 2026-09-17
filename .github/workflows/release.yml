@@ -8,7 +8,7 @@ permissions:
   packages: write
 
 env:
-  REGISTRY_IMAGE: ghcr.io/lostb1t/remux
+  REGISTRY_IMAGE: ghcr.io/robertaidenschofield/remuxhttp
 
 jobs:
   test:
@@ -38,7 +38,7 @@ jobs:
             @semantic-release/git
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: "not-publishing-to-crates-io"
+          CARGO_REGISTRY_TOKEN: 'not-publishing-to-crates-io'
 
   build:
     name: Build
@@ -49,8 +49,8 @@ jobs:
       version: ${{ needs.preview.outputs.new_release_version }}
       cargo_version: ${{ needs.preview.outputs.new_release_version }}
       docker_tags: >-
-        -t ghcr.io/lostb1t/remux:${{ needs.preview.outputs.new_release_version }}
-        -t ghcr.io/lostb1t/remux:latest
+        -t ghcr.io/robertaidenschofield/remuxhttp:${{ needs.preview.outputs.new_release_version }}
+        -t ghcr.io/robertaidenschofield/remuxhttp:latest
     secrets: inherit
 
   semantic-release:
@@ -66,7 +66,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: main
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ github.token }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -80,8 +80,8 @@ jobs:
             @semantic-release/changelog
             @semantic-release/git
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-          CARGO_REGISTRY_TOKEN: "not-publishing-to-crates-io"
+          GITHUB_TOKEN: ${{ github.token }}
+          CARGO_REGISTRY_TOKEN: 'not-publishing-to-crates-io'
 
   publish-release:
     name: Publish release

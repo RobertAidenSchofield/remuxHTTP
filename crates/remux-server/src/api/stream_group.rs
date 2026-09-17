@@ -194,6 +194,7 @@ pub async fn stream_group_preview(
                     .user
                     .id,
             ),
+            session.device.remote_ip.as_deref(),
         )
         .await?;
 

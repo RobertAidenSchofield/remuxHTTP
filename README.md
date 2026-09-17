@@ -32,6 +32,7 @@ The fork keeps Remux's goal of working with existing Jellyfin clients while chan
 - **Desktop app**: Run the server from a macOS, Linux, or Windows tray application without Docker or a terminal.
 - **Custom dashboard**: Configure the server through a built-in admin interface.
 - **IPTV support**
+- **Client IP forwarding & rate-limit protection**: Forwards individual client IPs (`X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP`) to upstream manifests and add-ons to prevent shared IP rate-limiting (`HTTP 429`) in multi-user setups.
 
 ## Direct streaming architecture
 
@@ -79,6 +80,27 @@ Direct playback does not bypass the Jellyfin session API. Players continue to re
 
 Because playback metadata still includes the item ID and play session ID, resume points, scrobbling, webhooks, and watched state remain available even when the video bytes come directly from the remote source.
 
+### Client IP forwarding & manifest rate-limit protection
+
+When Remux is hosted on a single server or NAS (such as in Docker) for multiple users, each user may configure their own AIOStreams, AIOMetadata, or Stremio add-on manifests with personal scraper and debrid accounts.
+
+Without IP forwarding, all manifest queries, catalog lookups, and stream searches originate from the Remux host's single IP address. Upstream providers and scraping services frequently rate-limit such shared-IP traffic (`HTTP 429 Too Many Requests`).
+
+To eliminate upstream rate-limiting:
+
+- **Transparent IP Forwarding**: Remux extracts each client's remote IP address from incoming request headers (`X-Forwarded-For`, `X-Real-IP`) or connection socket and attaches them to all outbound Stremio SDK requests (`X-Forwarded-For`, `X-Real-IP`, and `CF-Connecting-IP`). Upstream add-on instances, scrapers, and Cloudflare see each end-user's distinct IP address.
+- **Manifest & Catalog Caching**: Search catalog metadata is cached for 15 minutes (900s) and stream candidate lookups are cached for 5 minutes (300s) with per-media concurrency locking. This eliminates redundant calls to upstream manifests during catalog browsing or rapid stream switching.
+- **Reverse Proxy Support**: If Remux is hosted behind a reverse proxy (e.g. Nginx, Traefik, Caddy, Cloudflare Tunnel, or Synology Reverse Proxy), ensure `X-Forwarded-For` or `X-Real-IP` is passed to Remux so individual user client IPs are preserved and forwarded.
+
+## Jellyfin 12 Compatibility
+
+Remux is updated to support the **Jellyfin 12** specification while preserving full backwards compatibility for Jellyfin 10.x players:
+
+- **Server Versioning**: Reports version `12.1.0` by default (configurable via `jellyfin_version` in `config.toml` or the `REMUX_JELLYFIN_VERSION` environment variable).
+- **Authentication Schemes**: Supports both modern Jellyfin 12 authorization headers (`Jellyfin Client="...", Device="...", DeviceId="...", Version="...", Token="..."` and standard `Bearer <token>`), as well as legacy `MediaBrowser` and `Emby` schemes for third-party players (Infuse, Swiftfin, Findroid).
+- **Jellyfin Web 12.1**: Bundles and serves the official Jellyfin Web `v12.1` client with the Modern UI layout, improved subtitle rendering, and modern playback controls.
+- **Jellyfin 12 API Stubs**: Includes fallback font (`GET /FallbackFont/Fonts`), backup management (`GET /Backup`, `GET /Backup/Manifest`), and alternate source management (`DELETE /Videos/{id}/AlternateSources`) endpoints expected by modern clients and admin dashboards.
+
 ## Building and Running
 
 ### 1. Docker (Recommended)
@@ -94,12 +116,9 @@ docker compose up -d --build
 
 ```yaml
 services:
-  remux:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.multistage
-    image: remux:local
-    container_name: remux
+  remuxHTTP:
+    image: ghcr.io/robertaidenschofield/remuxhttp:nightly
+    container_name: remuxHTTP
     restart: unless-stopped
     ports:
       - '3000:3000'
@@ -130,7 +149,7 @@ To build and develop directly on your host:
 #### Prerequisites
 
 - **Rust toolchain** (1.80+): `rustup default stable`
-- **Node.js** (v20+): For building `jellyfin-web`
+- **Node.js** (v22+ / v24+): For building `jellyfin-web` (v12.1)
 - **Cargo Make**: `cargo install --force cargo-make`
 - **Dioxus CLI** (0.7.9): `cargo install dioxus-cli --version 0.7.9 --locked`
 

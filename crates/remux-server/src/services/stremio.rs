@@ -74,6 +74,7 @@ impl StremioService {
         &self,
         media_type: sdks::stremio::MediaType,
         id: impl Into<String>,
+        client_ip: Option<&str>,
     ) -> Result<sdks::stremio::Meta> {
         Ok(self
             .client
@@ -83,6 +84,7 @@ impl StremioService {
                     id: id.into(),
                     season: None,
                     episode: None,
+                    client_ip: client_ip.map(str::to_string),
                 })
                 .with_cache(Duration::from_secs(3600)),
             )
@@ -113,8 +115,9 @@ impl StremioService {
                     search: Some(q),
                     genre: None,
                     skip: None,
+                    client_ip: None,
                 })
-                .with_cache(Duration::from_secs(60)),
+                .with_cache(Duration::from_secs(900)),
             )
             .await?
             .metas)
@@ -124,6 +127,7 @@ impl StremioService {
         &self,
         media_type: sdks::stremio::MediaType,
         id: impl Into<String>,
+        client_ip: Option<&str>,
     ) -> Result<Vec<sdks::stremio::Stream>> {
         Ok(self
             .client
@@ -131,6 +135,7 @@ impl StremioService {
                 self.ep(sdks::stremio::StreamEndpoint {
                     kind: media_type,
                     id: id.into(),
+                    client_ip: client_ip.map(str::to_string),
                 })
                 .with_cache(Duration::from_secs(300)),
             )
@@ -144,6 +149,7 @@ impl StremioService {
         imdb_id: &str,
         season: Option<i64>,
         episode: Option<i64>,
+        client_ip: Option<&str>,
     ) -> Result<Vec<sdks::stremio::Subtitle>> {
         Ok(self
             .client
@@ -153,6 +159,7 @@ impl StremioService {
                     imdb_id: imdb_id.to_string(),
                     season,
                     episode,
+                    client_ip: client_ip.map(str::to_string),
                 })
                 .with_cache(Duration::from_secs(86_400)),
             )
@@ -182,6 +189,7 @@ impl StremioService {
                     search: None,
                     genre: None,
                     skip: None,
+                    client_ip: None,
                 },
                 extra: extra_query.clone(),
             })
@@ -212,6 +220,7 @@ impl StremioService {
                                 search: None,
                                 genre: None,
                                 skip: Some(page * page_size),
+                                client_ip: None,
                             },
                             extra: extra_query,
                         })

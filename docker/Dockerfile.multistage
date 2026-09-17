@@ -3,13 +3,21 @@
 # ------------------------------------------------------------------------------
 # Stage 1: Build Jellyfin Web
 # ------------------------------------------------------------------------------
-FROM node:20-bookworm-slim AS web-builder
+FROM node:24-bookworm-slim AS web-builder
+ENV BROWSERSLIST_IGNORE_OLD_DATA=true
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
+ENV NPM_CONFIG_AUDIT=false
+ENV NPM_CONFIG_FUND=false
+ENV NODE_ENV=production
 WORKDIR /src
+
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
-ARG JELLYFIN_WEB_TAG=v10.11.11
+ARG JELLYFIN_WEB_TAG=v12.1
 RUN git clone --depth 1 --branch "${JELLYFIN_WEB_TAG}" https://github.com/jellyfin/jellyfin-web.git .
-RUN echo "engine-strict=false" > .npmrc \
-    && npm install \
+RUN echo "engine-strict=false" >> .npmrc \
+    && echo "audit=false" >> .npmrc \
+    && echo "fund=false" >> .npmrc \
+    && npm install --loglevel=error \
     && npm run build:production
 
 # ------------------------------------------------------------------------------

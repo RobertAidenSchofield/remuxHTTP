@@ -229,6 +229,7 @@ impl StreamAddon for EclipseAddon {
         media: &db::Media,
         ctx: &AppContext,
         _id_prefixes: Option<&[String]>,
+        _client_ip: Option<&str>,
     ) -> Result<Vec<StreamInfo>> {
         eclipse_streams(&self.client, self.base_url(), media, ctx).await
     }

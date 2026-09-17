@@ -1680,6 +1680,7 @@ async fn item_for_user(
                         .user
                         .id,
                 ),
+                session.device.remote_ip.as_deref(),
             )
             .await
             .log_err("failed to refresh sources");

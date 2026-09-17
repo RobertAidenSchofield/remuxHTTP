@@ -601,7 +601,7 @@ pub struct Config {
 }
 
 fn default_jellyfin_version() -> String {
-    "10.11.8".to_string()
+    "12.1.0".to_string()
 }
 
 fn default_remuxdb_url() -> Option<String> {

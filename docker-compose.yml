@@ -1,10 +1,7 @@
 services:
-  remux:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.multistage
-    image: remux:local
-    container_name: remux
+  remuxHTTP:
+    image: ghcr.io/robertaidenschofield/remuxhttp:nightly
+    container_name: remuxHTTP
     restart: unless-stopped
     ports:
       - '3000:3000'

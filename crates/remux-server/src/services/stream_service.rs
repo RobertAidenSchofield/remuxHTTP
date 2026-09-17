@@ -33,6 +33,7 @@ pub(crate) struct StreamServiceConfig {
     pub show_ungrouped: bool,
     pub stream_filter: Option<StreamFilter>,
     pub user_id: Option<Uuid>,
+    pub client_ip: Option<String>,
 }
 
 /// Central service for stream selection on a single playback request.
@@ -47,6 +48,7 @@ pub(crate) struct StreamService {
     show_ungrouped: bool,
     stream_filter: Option<StreamFilter>,
     user_id: Option<Uuid>,
+    pub client_ip: Option<String>,
     // Populated by resolve()
     group: Option<(Uuid, String, Vec<db::Media>)>,
     stream: Option<db::Media>,
@@ -62,6 +64,7 @@ impl StreamService {
             show_ungrouped: cfg.show_ungrouped,
             stream_filter: cfg.stream_filter,
             user_id: cfg.user_id,
+            client_ip: cfg.client_ip,
             group: None,
             stream: None,
             streams: vec![],
@@ -84,7 +87,12 @@ impl StreamService {
             {
                 self.ctx
                     .addons
-                    .refresh_streams(&mut parent, &self.ctx, self.user_id)
+                    .refresh_streams(
+                        &mut parent,
+                        &self.ctx,
+                        self.user_id,
+                        self.client_ip.as_deref(),
+                    )
                     .await
                     .inspect_err(|e| tracing::error!("refresh_streams failed: {e:#}"));
             }
@@ -104,7 +112,12 @@ impl StreamService {
 
         self.ctx
             .addons
-            .refresh_streams(&mut root, &self.ctx, self.user_id)
+            .refresh_streams(
+                &mut root,
+                &self.ctx,
+                self.user_id,
+                self.client_ip.as_deref(),
+            )
             .await
             .inspect_err(|e| tracing::error!("refresh_streams failed: {e:#}"));
 
@@ -194,6 +207,7 @@ impl StreamService {
         requested_id: Option<Uuid>,
         device_key: Option<&str>,
         user_id: Option<Uuid>,
+        client_ip: Option<&str>,
     ) -> anyhow::Result<db::Media> {
         let lookup_id = requested_id.unwrap_or(item_id);
         // Resolve the id the way PlaybackInfo does: `resolve_item` is
@@ -202,8 +216,16 @@ impl StreamService {
         let media = crate::services::MediaResolveService::resolve_item(lookup_id, ctx)
             .await?
             .ok_or_else(|| anyhow::anyhow!("stream not found: {}", lookup_id))?;
-        Self::dispatch_lookup(ctx, item_id, requested_id, device_key, user_id, media)
-            .await
+        Self::dispatch_lookup(
+            ctx,
+            item_id,
+            requested_id,
+            device_key,
+            user_id,
+            client_ip,
+            media,
+        )
+        .await
     }
 
     async fn dispatch_lookup(
@@ -212,6 +234,7 @@ impl StreamService {
         requested_id: Option<Uuid>,
         device_key: Option<&str>,
         user_id: Option<Uuid>,
+        client_ip: Option<&str>,
         media: db::Media,
     ) -> anyhow::Result<db::Media> {
         match media.kind {
@@ -237,7 +260,7 @@ impl StreamService {
                 let media_id = media.id;
                 let _ = ctx
                     .addons
-                    .refresh_streams(&mut media, ctx, user_id)
+                    .refresh_streams(&mut media, ctx, user_id, client_ip)
                     .await
                     .inspect_err(|e| tracing::error!("refresh_streams failed: {e:#}"));
                 let sources = media
@@ -1030,20 +1053,20 @@ mod tests {
 
         // B played with MediaSourceId = A.id (what the auto-play rewrite hands
         // out). Before the fix: Err("stream not found: <A.id>").
-        let resolved = StreamService::lookup(ctx, dup.id, Some(owner.id), None, None)
+        let resolved = StreamService::lookup(ctx, dup.id, Some(owner.id), None, None, None)
             .await
             .expect("an item id used as MediaSourceId must resolve to a stream");
         assert_eq!(resolved.id, stream.id);
 
         // Plain auto-play (MediaSourceId == item being played) still works.
-        let resolved = StreamService::lookup(ctx, owner.id, Some(owner.id), None, None)
+        let resolved = StreamService::lookup(ctx, owner.id, Some(owner.id), None, None, None)
             .await
             .unwrap();
         assert_eq!(resolved.id, stream.id);
 
         // A real stream id is still honoured.
         let resolved =
-            StreamService::lookup(ctx, owner.id, Some(stream.id), None, None)
+            StreamService::lookup(ctx, owner.id, Some(stream.id), None, None, None)
                 .await
                 .unwrap();
         assert_eq!(resolved.id, stream.id);
@@ -1204,6 +1227,7 @@ mod tests {
             show_ungrouped: true,
             stream_filter: None,
             user_id: None,
+            client_ip: None,
         });
         let probed = |effective: &db::Media, specific_requested: bool| ProbedStreams {
             results: vec![ProbeResult {
@@ -1275,6 +1299,7 @@ mod tests {
             show_ungrouped: false,
             stream_filter: None,
             user_id: None,
+            client_ip: None,
         });
         service.streams = vec![dead.clone(), alive.clone()];
         let selection = service.select_streams();
@@ -1294,6 +1319,7 @@ mod tests {
             show_ungrouped: false,
             stream_filter: None,
             user_id: None,
+            client_ip: None,
         });
         service.group = Some((
             group_a,

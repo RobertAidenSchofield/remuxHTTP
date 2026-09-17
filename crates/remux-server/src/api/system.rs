@@ -5,7 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use http::{HeaderMap, StatusCode};
-use remux_macros::{get, post, query, route};
+use remux_macros::{delete, get, post, query, route};
 use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
@@ -891,6 +891,30 @@ pub async fn system_info(
     }))
 }
 
+/// Fallback font list stub for Jellyfin 12 client requests
+#[get("/fallbackfont/fonts")]
+pub async fn fallback_font_fonts() -> impl IntoResponse {
+    Json(Vec::<String>::new())
+}
+
+/// Backup listing stub for Jellyfin 12 admin dashboard
+#[get("/backup")]
+pub async fn backup_list(_session: auth::AdminSession) -> impl IntoResponse {
+    Json(Vec::<serde_json::Value>::new())
+}
+
+/// Backup manifest stub for Jellyfin 12 admin dashboard
+#[get("/backup/manifest")]
+pub async fn backup_manifest(_session: auth::AdminSession) -> impl IntoResponse {
+    Json(json!({ "Backups": [] }))
+}
+
+/// Alternate sources deletion stub for Jellyfin 12
+#[delete("/videos/{id}/alternatesources", "/items/{id}/alternatesources")]
+pub async fn delete_alternate_sources(_session: auth::AdminSession) -> impl IntoResponse {
+    StatusCode::NO_CONTENT
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1343,5 +1367,48 @@ mod test {
             Some(js),
             "custom_js should round-trip through branding config"
         );
+    }
+
+    #[tokio::test]
+    async fn test_jellyfin12_stub_endpoints() {
+        let (server, _ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        // GET /fallbackfont/fonts
+        let resp = server.get("/fallbackfont/fonts").await;
+        resp.assert_status_ok();
+        assert_eq!(resp.text(), "[]");
+
+        // GET /backup
+        let resp = server
+            .get("/backup")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        assert_eq!(resp.text(), "[]");
+
+        // GET /backup/manifest
+        let resp = server
+            .get("/backup/manifest")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        resp.assert_json_contains(&json!({ "Backups": [] }));
+
+        // DELETE /videos/123/alternatesources
+        let resp = server
+            .delete("/videos/123/alternatesources")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status(StatusCode::NO_CONTENT);
     }
 }

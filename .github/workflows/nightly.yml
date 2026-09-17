@@ -2,7 +2,7 @@ name: Nightly
 
 on:
   schedule:
-    - cron: "0 2 * * *"
+    - cron: '0 2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 env:
-  REGISTRY_IMAGE: ghcr.io/lostb1t/remux
+  REGISTRY_IMAGE: ghcr.io/robertaidenschofield/remuxhttp
 
 jobs:
   check-changes:
@@ -80,7 +80,7 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
       cargo_version: ${{ needs.version.outputs.version }}
-      docker_tags: -t ghcr.io/lostb1t/remux:nightly
+      docker_tags: -t ghcr.io/robertaidenschofield/remuxhttp:nightly
     secrets: inherit
 
   publish-nightly:

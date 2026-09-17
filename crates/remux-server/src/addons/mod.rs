@@ -786,6 +786,7 @@ pub trait StreamAddon: Send + Sync {
         media: &db::Media,
         ctx: &AppContext,
         id_prefixes: Option<&[String]>,
+        client_ip: Option<&str>,
     ) -> Result<Vec<crate::stream::StreamInfo>>;
     /// Serve bytes for a stream that requires this addon's config (e.g. credentials).
     /// Only called when `StreamDescriptor::addon_id()` points to this addon.
@@ -2602,6 +2603,7 @@ impl AddonService {
         media: &db::Media,
         ctx: &AppContext,
         user_id: Option<Uuid>,
+        client_ip: Option<&str>,
     ) -> Result<Vec<db::Media>> {
         let addons = self
             .addons_for::<dyn StreamAddon>(media, &ctx.db, user_id)
@@ -2626,7 +2628,7 @@ impl AddonService {
                     .stream
                     .as_ref()
                     .unwrap()
-                    .get_streams(media, ctx, id_prefixes.as_deref())
+                    .get_streams(media, ctx, id_prefixes.as_deref(), client_ip)
                     .await
                 {
                     Ok(mut streams) => {
@@ -2847,6 +2849,7 @@ impl AddonService {
         media: &mut db::Media,
         ctx: &AppContext,
         user_id: Option<Uuid>,
+        client_ip: Option<&str>,
     ) -> Result<()> {
         const STREAMS_TTL_SECS: i64 = 60;
         static STREAM_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
@@ -2948,7 +2951,7 @@ impl AddonService {
         };
         let probe_t = std::time::Instant::now();
         let (raw, probe_versions) = tokio::join!(
-            self.get_streams(media, ctx, user_id),
+            self.get_streams(media, ctx, user_id, client_ip),
             tokio::time::timeout(std::time::Duration::from_secs(5), probe_versions_fut,)
         );
         let raw = raw?;

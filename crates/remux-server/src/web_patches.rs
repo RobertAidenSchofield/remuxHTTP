@@ -22,12 +22,16 @@ pub static CSS: &str = r##"
   .cardOverlayButton-br { display: none !important; }
 
   /* ── Play button: disabled by default, enabled when streams arrive ── */
-  .detailPagePrimaryContainer .btnPlay {
+  .detailPagePrimaryContainer .btnPlay,
+  .detailPagePrimaryContainer .btnPlayOrResume,
+  .btnPlayOrResume {
     opacity: 0.4;
     pointer-events: none;
     cursor: default;
   }
-  .detailPagePrimaryContainer.remux-streams-ready .btnPlay {
+  .detailPagePrimaryContainer.remux-streams-ready .btnPlay,
+  .detailPagePrimaryContainer.remux-streams-ready .btnPlayOrResume,
+  .remux-streams-ready .btnPlayOrResume {
     opacity: 1;
     pointer-events: auto;
     cursor: pointer;

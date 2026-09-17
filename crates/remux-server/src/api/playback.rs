@@ -206,6 +206,7 @@ async fn items_playbackinfo_inner(
                 .user
                 .id,
         ),
+        client_ip: session.device.remote_ip.clone(),
     });
     let is_live = media.is_live();
     let is_track_item = media.is_track();
@@ -902,6 +903,17 @@ async fn videos_stream_inner(
             )
         });
     let requested_id = probe_fallback.or(q.media_source_id);
+    let client_ip = headers
+        .get("X-Forwarded-For")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(str::trim)
+        .or_else(|| {
+            headers
+                .get("X-Real-IP")
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+        });
     let media = StreamService::lookup(
         &state.ctx,
         id,
@@ -909,6 +921,7 @@ async fn videos_stream_inner(
         q.device_id
             .as_deref(),
         user_id,
+        client_ip,
     )
     .await;
 
@@ -1293,6 +1306,7 @@ pub async fn audio_universal(
                     .user
                     .id,
             ),
+            session.device.remote_ip.as_deref(),
         )
         .await
         .inspect_err(|e| error!("refresh_streams failed: {e:#}"));

@@ -544,9 +544,10 @@ impl StreamAddon for StremioAddon {
         media: &db::Media,
         _ctx: &AppContext,
         id_prefixes: Option<&[String]>,
+        client_ip: Option<&str>,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         let svc = self.service()?;
-        stremio_streams(&svc, &self.manifest_url, media, id_prefixes).await
+        stremio_streams(&svc, &self.manifest_url, media, id_prefixes, client_ip).await
     }
 }
 
@@ -706,7 +707,7 @@ async fn manifest_meta_type_fallback(
     for candidate in candidates {
         let alt_type = sdks::stremio::MediaType::Other(candidate);
         if let Ok(meta) = svc
-            .get_meta(alt_type, meta_id.to_string())
+            .get_meta(alt_type, meta_id.to_string(), None)
             .await
         {
             return Some(meta);
@@ -778,7 +779,7 @@ async fn fetch_and_cache_meta(
     } else {
         Arc::new(
             match svc
-                .get_meta(media_type.clone(), meta_id.clone())
+                .get_meta(media_type.clone(), meta_id.clone(), None)
                 .await
             {
                 Ok(m) => m,
@@ -815,7 +816,7 @@ async fn fetch_and_cache_meta(
                         .tmdb
                         .or(series_tmdb);
                     if let Some(tid) = tmdb_id {
-                        svc.get_meta(media_type, format!("tmdb:{}", tid))
+                        svc.get_meta(media_type, format!("tmdb:{}", tid), None)
                             .await?
                     } else {
                         return Err(e);
@@ -1305,7 +1306,7 @@ async fn stremio_subtitles(
         _ => return Err(anyhow!("subtitles not supported for {:?}", media.kind)),
     };
 
-    svc.get_subtitles(media_type, imdb_id, season, episode)
+    svc.get_subtitles(media_type, imdb_id, season, episode, None)
         .await
 }
 
@@ -1414,6 +1415,7 @@ async fn stremio_streams(
     manifest_url: &StremioManifestUrl,
     media: &db::Media,
     id_prefixes: Option<&[String]>,
+    client_ip: Option<&str>,
 ) -> Result<Vec<crate::stream::StreamInfo>> {
     let gp_ext = media
         .grandparent
@@ -1442,7 +1444,7 @@ async fn stremio_streams(
     let mut streams_opt: Option<Vec<sdks::stremio::Stream>> = None;
     for id in ids_to_try {
         match svc
-            .get_streams(media_type.clone(), id)
+            .get_streams(media_type.clone(), id, client_ip)
             .await
         {
             Ok(s) => {
@@ -1764,7 +1766,7 @@ mod tests {
 
         // Confirm the generic type really does 404 first.
         let direct = svc
-            .get_meta(sdks::stremio::MediaType::Series, "fk:27".to_string())
+            .get_meta(sdks::stremio::MediaType::Series, "fk:27".to_string(), None)
             .await;
         assert!(direct.is_err());
         series_attempt.assert();

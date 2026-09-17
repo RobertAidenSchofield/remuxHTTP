@@ -461,6 +461,7 @@ impl StreamAddon for IptvAddon {
         media: &db::Media,
         _ctx: &AppContext,
         _id_prefixes: Option<&[String]>,
+        _client_ip: Option<&str>,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         let Some(ref si) = media.stream_info else {
             return Ok(vec![]);
