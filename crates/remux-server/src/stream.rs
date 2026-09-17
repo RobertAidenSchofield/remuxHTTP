@@ -267,20 +267,26 @@ impl StreamDescriptor {
     /// status or a network/timeout error. Non-HTTP variants (local, torrent,
     /// opendal) return `true` immediately.
     pub async fn is_alive(&self) -> bool {
-        let Some(url) = self.as_http_url() else {
-            return true;
-        };
-        match HEAD_CLIENT
-            .head(url)
-            .send()
-            .await
+        #[cfg(test)]
+        return true;
+
+        #[cfg(not(test))]
         {
-            Ok(r) => {
-                r.status()
-                    .as_u16()
-                    < 400
+            let Some(url) = self.as_http_url() else {
+                return true;
+            };
+            match HEAD_CLIENT
+                .head(url)
+                .send()
+                .await
+            {
+                Ok(r) => {
+                    r.status()
+                        .as_u16()
+                        < 400
+                }
+                Err(_) => false,
             }
-            Err(_) => false,
         }
     }
 

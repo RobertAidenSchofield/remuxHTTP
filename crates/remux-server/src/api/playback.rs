@@ -1605,6 +1605,30 @@ mod tests {
         let now = Utc::now().naive_utc();
         let stream_url = "https://cdn.example.com/movie.mp4";
 
+        let probe = crate::api::MediaSourceInfo {
+            id: uuid::Uuid::new_v4(),
+            container: Some(VideoContainer::Mp4),
+            bitrate: Some(8_000_000),
+            run_time_ticks: Some(100_000_000),
+            media_streams: vec![
+                crate::api::MediaStream {
+                    codec: Some("h264".to_string()),
+                    type_: Some(crate::api::MediaStreamType::Video),
+                    index: 0,
+                    width: Some(1920),
+                    height: Some(1080),
+                    ..Default::default()
+                },
+                crate::api::MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(crate::api::MediaStreamType::Audio),
+                    index: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
         let mut media = crate::db::Media {
             title: "Direct Remote URL Test".to_string(),
             kind: crate::db::MediaKind::Stream,
@@ -1612,6 +1636,7 @@ mod tests {
                 descriptor: stream::StreamDescriptor::http(stream_url),
                 ..Default::default()
             }),
+            probe_data: Some(probe),
             created_at: now,
             updated_at: now,
             ..Default::default()
