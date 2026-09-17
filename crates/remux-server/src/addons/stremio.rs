@@ -1880,7 +1880,7 @@ mod tests {
         });
         media.grandparent = Some(Box::new(grandparent));
 
-        let streams = stremio_streams(&svc, &manifest_url, &media, None)
+        let streams = stremio_streams(&svc, &manifest_url, &media, None, None)
             .await
             .unwrap();
 
@@ -1916,7 +1916,7 @@ mod tests {
         });
         media.grandparent = Some(Box::new(grandparent));
 
-        let streams = stremio_streams(&svc, &manifest_url, &media, None)
+        let streams = stremio_streams(&svc, &manifest_url, &media, None, None)
             .await
             .unwrap();
 

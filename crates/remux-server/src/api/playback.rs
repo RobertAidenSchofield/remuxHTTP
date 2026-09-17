@@ -1362,6 +1362,7 @@ mod tests {
     use remux_sdks::remux::VideoContainer;
     use serde_json::json;
 
+    use crate::api;
     use crate::integration_test::{
         AUTH_HEADER, assert_api_keys_are_real, auth_header_with_token,
         authenticated_server, insert_test_source, insert_test_source_of_kind,
