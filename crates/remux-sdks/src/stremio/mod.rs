@@ -220,12 +220,29 @@ where
     }))
 }
 
+fn is_forwardable_public_ip(ip_str: &str) -> bool {
+    let Ok(ip) = ip_str.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            !v4.is_private()
+                && !v4.is_loopback()
+                && !v4.is_link_local()
+                && !v4.is_broadcast()
+                && !v4.is_unspecified()
+        }
+        std::net::IpAddr::V6(v6) => !v6.is_loopback() && !v6.is_unspecified(),
+    }
+}
+
 pub(crate) fn apply_client_ip_headers(map: &mut http::HeaderMap, client_ip: Option<&str>) {
     if let Some(ip) = client_ip {
-        if let Ok(val) = http::HeaderValue::from_str(ip) {
-            map.insert("X-Forwarded-For", val.clone());
-            map.insert("X-Real-IP", val.clone());
-            map.insert("CF-Connecting-IP", val);
+        if is_forwardable_public_ip(ip) {
+            if let Ok(val) = http::HeaderValue::from_str(ip) {
+                map.insert("X-Forwarded-For", val.clone());
+                map.insert("X-Real-IP", val);
+            }
         }
     }
 }
@@ -1242,8 +1259,16 @@ mod tests {
         let headers = ep_with_ip.headers();
         assert_eq!(headers.get("X-Forwarded-For").unwrap(), "203.0.113.45");
         assert_eq!(headers.get("X-Real-IP").unwrap(), "203.0.113.45");
-        assert_eq!(headers.get("CF-Connecting-IP").unwrap(), "203.0.113.45");
         assert_eq!(headers.get(http::header::USER_AGENT).unwrap(), "AIOStreams/1.0");
+
+        let ep_with_private_ip = StreamEndpoint {
+            kind: MediaType::Movie,
+            id: "tt123456".to_string(),
+            client_ip: Some("192.168.1.100".to_string()),
+        };
+        let headers_private = ep_with_private_ip.headers();
+        assert!(headers_private.get("X-Forwarded-For").is_none());
+        assert!(headers_private.get("X-Real-IP").is_none());
 
         let ep_no_ip = StreamEndpoint {
             kind: MediaType::Movie,
@@ -1253,6 +1278,5 @@ mod tests {
         let headers_no_ip = ep_no_ip.headers();
         assert!(headers_no_ip.get("X-Forwarded-For").is_none());
         assert!(headers_no_ip.get("X-Real-IP").is_none());
-        assert!(headers_no_ip.get("CF-Connecting-IP").is_none());
     }
 }
