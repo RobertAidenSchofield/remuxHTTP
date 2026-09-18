@@ -657,8 +657,8 @@ pub async fn remux_meta(
         .get_meta(media_type, id, session.device.remote_ip.as_deref())
         .await
     {
-        Ok(meta) => Ok(Json::<remux_sdks::stremio::Meta>(meta).into_response()),
-        Err(_) => {
+        Ok(Some(meta)) => Ok(Json::<remux_sdks::stremio::Meta>(meta).into_response()),
+        Ok(None) | Err(_) => {
             Ok((StatusCode::NOT_FOUND, Json(serde_json::Value::Null)).into_response())
         }
     }

@@ -347,7 +347,8 @@ impl Endpoint for MetaEndpoint {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetaResponse {
-    pub meta: Meta,
+    #[serde(default)]
+    pub meta: Option<Meta>,
 }
 
 /// TODO: Add filename for better matching
@@ -582,7 +583,7 @@ impl Meta {
     /// Catalog responses are often partial (missing `imdb_id` etc.); calling
     /// this upgrades the item to complete metadata before DB conversion.
     pub async fn resolve(&mut self, client: &RestClient) -> Result<()> {
-        *self = client
+        if let Some(meta) = client
             .execute(
                 MetaEndpoint {
                     media_type: self
@@ -598,7 +599,10 @@ impl Meta {
                 .with_cache(std::time::Duration::from_secs(3600)),
             )
             .await?
-            .meta;
+            .meta
+        {
+            *self = meta;
+        }
         Ok(())
     }
 
@@ -1278,5 +1282,22 @@ mod tests {
         let headers_no_ip = ep_no_ip.headers();
         assert!(headers_no_ip.get("X-Forwarded-For").is_none());
         assert!(headers_no_ip.get("X-Real-IP").is_none());
+    }
+
+    #[test]
+    fn meta_response_deserializes_null_and_empty_gracefully() {
+        let null_resp: super::MetaResponse =
+            serde_json::from_str(r#"{"meta": null}"#).expect("should parse null meta");
+        assert!(null_resp.meta.is_none());
+
+        let empty_resp: super::MetaResponse =
+            serde_json::from_str(r#"{}"#).expect("should parse empty meta object");
+        assert!(empty_resp.meta.is_none());
+
+        let populated_resp: super::MetaResponse =
+            serde_json::from_str(r#"{"meta": {"id": "tt123", "type": "movie", "name": "Test"}}"#)
+                .expect("should parse populated meta");
+        assert!(populated_resp.meta.is_some());
+        assert_eq!(populated_resp.meta.unwrap().id, "tt123");
     }
 }

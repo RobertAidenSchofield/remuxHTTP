@@ -75,7 +75,7 @@ impl StremioService {
         media_type: sdks::stremio::MediaType,
         id: impl Into<String>,
         client_ip: Option<&str>,
-    ) -> Result<sdks::stremio::Meta> {
+    ) -> Result<Option<sdks::stremio::Meta>> {
         Ok(self
             .client
             .execute(

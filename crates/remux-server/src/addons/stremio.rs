@@ -197,7 +197,7 @@ pub struct StremioAddon {
     /// Shared between the tree-children path and `stremio_meta_fetch` so the API is
     /// called exactly once per series. Evicted by `on_series_done`.
     medias_cache: Arc<
-        std::sync::Mutex<std::collections::HashMap<String, Arc<sdks::stremio::Meta>>>,
+        std::sync::Mutex<std::collections::HashMap<String, Option<Arc<sdks::stremio::Meta>>>>,
     >,
 }
 
@@ -411,8 +411,10 @@ impl TreeAddon for StremioAddon {
         match root.kind {
             db::MediaKind::Series => {
                 let svc = self.service()?;
-                let meta_arc =
-                    fetch_and_cache_meta(&svc, root, &self.medias_cache, ctx).await?;
+                let meta_arc = match fetch_and_cache_meta(&svc, root, &self.medias_cache, ctx).await? {
+                    Some(m) => m,
+                    None => return Ok(None),
+                };
                 let seasons =
                     db::stremio_meta_seasons(&meta_arc, root.id, &root.external_ids);
                 if seasons.is_empty() {
@@ -445,7 +447,7 @@ impl TreeAddon for StremioAddon {
                     .unwrap()
                     .get(&meta_id)
                     .cloned();
-                let Some(meta_arc) = meta_arc else {
+                let Some(Some(meta_arc)) = meta_arc else {
                     return Ok(None);
                 };
                 let season_idx = match root.idx {
@@ -706,7 +708,7 @@ async fn manifest_meta_type_fallback(
 
     for candidate in candidates {
         let alt_type = sdks::stremio::MediaType::Other(candidate);
-        if let Ok(meta) = svc
+        if let Ok(Some(meta)) = svc
             .get_meta(alt_type, meta_id.to_string(), None)
             .await
         {
@@ -722,10 +724,10 @@ async fn fetch_and_cache_meta(
     svc: &stremio_service::StremioService,
     media: &db::Media,
     cache: &std::sync::Mutex<
-        std::collections::HashMap<String, Arc<sdks::stremio::Meta>>,
+        std::collections::HashMap<String, Option<Arc<sdks::stremio::Meta>>>,
     >,
     ctx: &AppContext,
-) -> Result<Arc<sdks::stremio::Meta>> {
+) -> Result<Option<Arc<sdks::stremio::Meta>>> {
     // For Season/Episode, the series meta is cached under the series' ID.
     // Prefer grandparent lookup so Seasons/Episodes with empty own external_ids
     // still resolve to the correct cache entry.
@@ -752,87 +754,99 @@ async fn fetch_and_cache_meta(
         return Ok(cached);
     }
 
-    let series_imdb = media
-        .grandparent
-        .as_deref()
-        .and_then(|gp| {
-            gp.external_ids
-                .imdb
-                .clone()
-        });
-    let is_custom = media
-        .external_ids
-        .imdb
-        .is_none()
-        && series_imdb.is_none();
-    let media_type = media
-        .external_ids
-        .stremio_media_type(&media.kind);
-    let meta: Arc<sdks::stremio::Meta> = if let Some(stored) = ctx
+    let meta: Option<Arc<sdks::stremio::Meta>> = if let Some(stored) = ctx
         .store
         .get::<sdks::stremio::Meta>(
             media
                 .id
                 .to_string(),
         ) {
-        stored
+        Some(stored)
     } else {
-        Arc::new(
-            match svc
-                .get_meta(media_type.clone(), meta_id.clone(), None)
-                .await
-            {
-                Ok(m) => m,
-                // Custom-ID items (no IMDB/TMDB) have no `MediaKind`-derived type that's
-                // guaranteed correct: a DB row imported before `custom_stremio_type` was
-                // tracked (or a season/episode that never inherited it) falls back to a
-                // generic type that may not match the addon's own non-standard one (e.g.
-                // "anime"). Ask the addon's manifest what type(s) it actually serves for
-                // this ID and retry, rather than failing permanently.
-                Err(e)
-                    if is_404(&e)
-                        && is_custom
-                        && media
-                            .external_ids
-                            .custom_stremio_type
-                            .is_none() =>
-                {
-                    match manifest_meta_type_fallback(svc, &media_type, &meta_id).await
+        let series_ext = match media.kind {
+            db::MediaKind::Season | db::MediaKind::Episode => {
+                media.grandparent.as_deref().map(|gp| &gp.external_ids)
+            }
+            _ => Some(&media.external_ids),
+        };
+
+        let mut candidate_ids = Vec::new();
+        if let Some(ext) = series_ext {
+            if let Some(ref imdb) = ext.imdb {
+                candidate_ids.push(imdb.to_string());
+            }
+            if let Some(ref cid) = ext.custom_stremio_id {
+                candidate_ids.push(cid.clone());
+            }
+            if let Some(tmdb) = ext.tmdb {
+                candidate_ids.push(format!("tmdb:{}", tmdb));
+            }
+            if let Some(tvdb) = ext.tvdb {
+                candidate_ids.push(format!("tvdb:{}", tvdb));
+            }
+            if let Some(kitsu) = ext.kitsu {
+                candidate_ids.push(format!("kitsu:{}", kitsu));
+            }
+        }
+        if !candidate_ids.contains(&meta_id) {
+            candidate_ids.insert(0, meta_id.clone());
+        }
+
+        let manifest = svc.get_manifest().await.ok();
+        let meta_prefixes: Option<Vec<String>> = manifest.as_ref().and_then(|m| {
+            m.resources
+                .iter()
+                .find_map(|r| match r {
+                    sdks::stremio::Resource::Detailed(r)
+                        if r.name == sdks::stremio::ResourceType::Meta =>
                     {
-                        Some(m) => m,
-                        None => return Err(e),
+                        r.id_prefixes.clone()
                     }
+                    _ => None,
+                })
+                .or_else(|| m.id_prefixes.clone())
+        });
+
+        if let Some(prefixes) = meta_prefixes.as_deref() {
+            let (matching, non_matching): (Vec<String>, Vec<String>) = candidate_ids
+                .into_iter()
+                .partition(|id| prefixes.iter().any(|p| id.starts_with(p.as_str())));
+            let mut ordered = matching;
+            ordered.extend(non_matching);
+            candidate_ids = ordered;
+        }
+
+        let media_type = media
+            .external_ids
+            .stremio_media_type(&media.kind);
+
+        let mut found_meta = None;
+        for id in candidate_ids {
+            match svc.get_meta(media_type.clone(), id.clone(), None).await {
+                Ok(Some(m)) => {
+                    found_meta = Some(m);
+                    break;
                 }
-                Err(e) if is_404(&e) && !is_custom => {
-                    let series_tmdb = media
-                        .grandparent
-                        .as_deref()
-                        .and_then(|gp| {
-                            gp.external_ids
-                                .tmdb
-                        });
-                    let tmdb_id = media
-                        .external_ids
-                        .tmdb
-                        .or(series_tmdb);
-                    if let Some(tid) = tmdb_id {
-                        svc.get_meta(media_type, format!("tmdb:{}", tid), None)
-                            .await?
-                    } else {
-                        return Err(e);
-                    }
+                Ok(None) => {}
+                Err(e) if is_404(&e) => {}
+                Err(e) => {
+                    debug!(id = %id, error = ?e, "stremio meta candidate fetch failed");
                 }
-                Err(e) => return Err(e),
-            },
-        )
+            }
+        }
+
+        if found_meta.is_none() {
+            found_meta = manifest_meta_type_fallback(svc, &media_type, &meta_id).await;
+        }
+
+        found_meta.map(Arc::new)
     };
 
-    let arc = meta;
     cache
         .lock()
         .unwrap()
-        .insert(meta_id, Arc::clone(&arc));
-    Ok(arc)
+        .insert(meta_id, meta.clone());
+    Ok(meta)
 }
 
 async fn stremio_meta_fetch(
@@ -840,7 +854,7 @@ async fn stremio_meta_fetch(
     media: &db::Media,
     ctx: &AppContext,
     medias_cache: &std::sync::Mutex<
-        std::collections::HashMap<String, Arc<sdks::stremio::Meta>>,
+        std::collections::HashMap<String, Option<Arc<sdks::stremio::Meta>>>,
     >,
 ) -> Result<Option<db::Media>> {
     let imdb_id = media
@@ -857,7 +871,10 @@ async fn stremio_meta_fetch(
             .clone());
     let is_custom = imdb_id.is_none();
 
-    let meta_arc = fetch_and_cache_meta(svc, media, medias_cache, ctx).await?;
+    let meta_arc = match fetch_and_cache_meta(svc, media, medias_cache, ctx).await? {
+        Some(m) => m,
+        None => return Ok(None),
+    };
 
     match media.kind {
         db::MediaKind::Movie | db::MediaKind::Series => {
@@ -944,7 +961,9 @@ async fn stremio_meta_fetch(
                 .and_then(|v| {
                     v.iter()
                         .find(|e| {
-                            e.episode == media.idx && e.season == media.parent_idx
+                            let ep_num = db::parse_stremio_episode(e);
+                            let s_num = db::parse_stremio_season(e);
+                            ep_num == media.idx && s_num == media.parent_idx
                         })
                 })
             else {
@@ -1836,6 +1855,56 @@ mod tests {
 
         assert!(meta.is_none());
         anime_attempt.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn stremio_get_meta_handles_null_meta_as_ok_none() {
+        let server = httpmock::MockServer::start();
+        let null_attempt = server.mock(|when, then| {
+            when.path("/meta/series/tt0000000.json");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "meta": null
+                }));
+        });
+
+        let svc =
+            stremio_service::StremioService::from_url(&server.base_url()).unwrap();
+        let result = svc
+            .get_meta(sdks::stremio::MediaType::Series, "tt0000000", None)
+            .await;
+
+        null_attempt.assert();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none(), "null meta must deserialize to Ok(None)");
+    }
+
+    #[tokio::test]
+    async fn stremio_get_meta_returns_some_on_valid_meta() {
+        let server = httpmock::MockServer::start();
+        let success_attempt = server.mock(|when, then| {
+            when.path("/meta/series/tmdb:67535.json");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "meta": {
+                        "id": "tmdb:67535",
+                        "type": "series",
+                        "name": "The Grand Tour"
+                    }
+                }));
+        });
+
+        let svc =
+            stremio_service::StremioService::from_url(&server.base_url()).unwrap();
+        let result = svc
+            .get_meta(sdks::stremio::MediaType::Series, "tmdb:67535", None)
+            .await;
+
+        success_attempt.assert();
+        assert!(result.is_ok());
+        let meta = result.unwrap().expect("should return Some(Meta)");
+        assert_eq!(meta.id, "tmdb:67535");
+        assert_eq!(meta.get_name(), Some("The Grand Tour".to_string()));
     }
 
     fn episode_media(external_ids: db::ExternalIds) -> db::Media {

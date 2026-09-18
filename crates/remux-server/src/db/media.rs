@@ -7438,6 +7438,34 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
 /// Extracts season-level `Media` items from a cached Stremio `Meta` without cloning
 /// the full response. Used by the streaming tree path where episodes are fetched
 /// per-season rather than all-at-once.
+pub(crate) fn parse_stremio_season(ep: &crate::sdks::stremio::Episode) -> Option<i64> {
+    if let Some(s) = ep.season {
+        return Some(s);
+    }
+    let parts: Vec<&str> = ep.id.split(':').collect();
+    if parts.len() >= 3 {
+        parts[parts.len() - 2].parse::<i64>().ok()
+    } else {
+        None
+    }
+}
+
+pub(crate) fn parse_stremio_episode(ep: &crate::sdks::stremio::Episode) -> Option<i64> {
+    if let Some(e) = ep.episode.or(ep.number) {
+        return Some(e);
+    }
+    let parts: Vec<&str> = ep.id.split(':').collect();
+    if parts.len() >= 2 {
+        parts.last().and_then(|s| s.parse::<i64>().ok())
+    } else {
+        None
+    }
+}
+
+/// Collects all seasons present in a cached Stremio `Meta` by inspecting its
+/// `videos[]` array. For each season found, a `Media` row is constructed with
+/// `id` derived deterministically via `Media::season_id(&series_key, season_idx)`.
+/// Returns an empty list if `videos` is absent or contains no season numbers.
 pub fn stremio_meta_seasons(
     meta: &crate::sdks::stremio::Meta,
     series_id: Uuid,
@@ -7461,7 +7489,7 @@ pub fn stremio_meta_seasons(
         &crate::sdks::stremio::Episode,
     > = std::collections::BTreeMap::new();
     for ep in videos {
-        if let Some(s) = ep.season {
+        if let Some(s) = parse_stremio_season(ep) {
             seasons_map
                 .entry(s)
                 .or_insert(ep);
@@ -7525,7 +7553,7 @@ pub fn stremio_meta_season_episodes(
     let mut out = Vec::new();
     for ep in videos
         .iter()
-        .filter(|e| e.season == Some(season_idx))
+        .filter(|e| parse_stremio_season(e) == Some(season_idx))
     {
         out.push(stremio_meta_episode(
             ep,
@@ -7550,9 +7578,7 @@ pub fn stremio_meta_episode(
     season_idx: i64,
     series_external_ids: &ExternalIds,
 ) -> Result<Media> {
-    let ep_idx = ep
-        .episode
-        .unwrap_or(0);
+    let ep_idx = parse_stremio_episode(ep).unwrap_or(0);
     let series_key = Media::series_canonical_key_ext(series_external_ids)
         .unwrap_or_else(|| series_id.to_string());
     let mut episode: Media = ep
@@ -7587,7 +7613,7 @@ pub fn stremio_meta_episode(
         episode.id = Media::episode_id(&series_key, season_idx, ep_idx);
     }
 
-    episode.idx = ep.episode;
+    episode.idx = parse_stremio_episode(ep);
     episode.parent_idx = Some(season_idx);
     episode.parent_id = Some(season_id);
     episode.grandparent_id = Some(series_id);
@@ -8441,6 +8467,62 @@ mod tests {
                     .custom_stremio_id
             );
         }
+    }
+
+    #[test]
+    fn stremio_meta_episode_supports_number_and_id_fallback() {
+        let series_id = Uuid::new_v4();
+        let season_id = Uuid::new_v4();
+        let ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt1234567".to_string()).unwrap()),
+            ..Default::default()
+        };
+
+        // Case 1: 'number' provided instead of 'episode'
+        let ep_number = sdks::stremio::Episode {
+            id: "tt1234567:1:3".to_string(),
+            tvdb_id: None,
+            title: Some("Ep 3".to_string()),
+            name: None,
+            released: None,
+            thumbnail: None,
+            episode: None,
+            season: Some(1),
+            overview: None,
+            number: Some(3),
+            description: None,
+            rating: None,
+            runtime: None,
+            directors: None,
+            writers: None,
+            cast: None,
+        };
+        let converted = stremio_meta_episode(&ep_number, series_id, season_id, 1, &ext).unwrap();
+        assert_eq!(converted.idx, Some(3));
+        assert!(converted.validate().is_ok(), "episode with number fallback must validate");
+
+        // Case 2: neither 'episode' nor 'number' provided, but id has :season:episode format
+        let ep_id = sdks::stremio::Episode {
+            id: "tt1234567:2:5".to_string(),
+            tvdb_id: None,
+            title: Some("Ep 5".to_string()),
+            name: None,
+            released: None,
+            thumbnail: None,
+            episode: None,
+            season: None,
+            overview: None,
+            number: None,
+            description: None,
+            rating: None,
+            runtime: None,
+            directors: None,
+            writers: None,
+            cast: None,
+        };
+        let converted_id = stremio_meta_episode(&ep_id, series_id, season_id, 2, &ext).unwrap();
+        assert_eq!(converted_id.idx, Some(5));
+        assert!(converted_id.validate().is_ok(), "episode with ID fallback must validate");
     }
 
     /// Regression test for #235: episode/season UUIDs must be anchored to the
