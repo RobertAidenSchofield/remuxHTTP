@@ -529,6 +529,8 @@ impl TryFrom<stremio::Episode> for db::Media {
                 .overview
                 .or(meta.description),
             rating_audience: meta.rating,
+            idx: db::parse_stremio_episode(&meta),
+            parent_idx: db::parse_stremio_season(&meta),
             ..Default::default()
         };
         if let Some(url) = meta.thumbnail {

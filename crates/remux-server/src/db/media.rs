@@ -7257,7 +7257,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                 > = episodes
                     .iter()
                     .filter_map(|ep| {
-                        ep.season
+                        parse_stremio_season(ep)
                             .map(|s| (s, ep.clone()))
                     })
                     .fold(std::collections::BTreeMap::new(), |mut acc, (s, ep)| {
@@ -7297,13 +7297,11 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     }
                     media_instances.push(season);
                     for ep in episodes {
-                        let ep_idx = ep
-                            .episode
-                            .unwrap_or(0);
+                        let ep_idx = parse_stremio_episode(&ep).unwrap_or(0);
                         let mut episode: Media = ep
                             .clone()
                             .try_into()?;
-                        episode.idx = ep.episode;
+                        episode.idx = parse_stremio_episode(&ep);
                         episode.id = Media::episode_id(&series_key, season_idx, ep_idx);
                         episode.external_ids = ExternalIds {
                             custom_stremio_type: media
@@ -7347,7 +7345,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                 episodes
                     .iter()
                     .filter_map(|ep| {
-                        ep.season
+                        parse_stremio_season(ep)
                             .map(|s| (s, ep.clone()))
                     })
                     .fold(
@@ -7394,10 +7392,8 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     let mut episode: Media = ep
                         .clone()
                         .try_into()?;
-                    let ep_idx = ep
-                        .episode
-                        .unwrap_or(0);
-                    episode.idx = ep.episode;
+                    let ep_idx = parse_stremio_episode(&ep).unwrap_or(0);
+                    episode.idx = parse_stremio_episode(&ep);
                     episode.id = Media::episode_id(&series_key, season_idx, ep_idx);
                     episode.external_ids = ExternalIds {
                         custom_stremio_type: media
@@ -7438,7 +7434,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
 /// Extracts season-level `Media` items from a cached Stremio `Meta` without cloning
 /// the full response. Used by the streaming tree path where episodes are fetched
 /// per-season rather than all-at-once.
-pub(crate) fn parse_stremio_season(ep: &crate::sdks::stremio::Episode) -> Option<i64> {
+pub fn parse_stremio_season(ep: &crate::sdks::stremio::Episode) -> Option<i64> {
     if let Some(s) = ep.season {
         return Some(s);
     }
@@ -7450,7 +7446,7 @@ pub(crate) fn parse_stremio_season(ep: &crate::sdks::stremio::Episode) -> Option
     }
 }
 
-pub(crate) fn parse_stremio_episode(ep: &crate::sdks::stremio::Episode) -> Option<i64> {
+pub fn parse_stremio_episode(ep: &crate::sdks::stremio::Episode) -> Option<i64> {
     if let Some(e) = ep.episode.or(ep.number) {
         return Some(e);
     }
