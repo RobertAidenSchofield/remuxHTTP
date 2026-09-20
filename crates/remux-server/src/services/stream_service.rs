@@ -909,9 +909,23 @@ fn media_info_from_probe(
         ),
     };
 
-    if (info_hash.is_none() && nzb.is_none()) || !filename.contains('.') {
+    if info_hash.is_none() && nzb.is_none() {
         return None;
     }
+
+    let filename = if filename.contains('.') && !filename.ends_with('.') {
+        filename
+    } else {
+        let ext = match probe.container.as_deref() {
+            Some(c) if c.contains("mkv") || c.contains("matroska") => "mkv",
+            Some(c) if c.contains("mp4") || c.contains("mov") => "mp4",
+            Some(c) if c.contains("webm") => "webm",
+            Some(c) if c.contains("avi") => "avi",
+            Some(c) if c.contains("ts") || c.contains("mpegts") => "ts",
+            _ => "mkv",
+        };
+        format!("{filename}.{ext}")
+    };
 
     let (kind, external_ids, season, episode) = if let Some(item) = item {
         let kind = match item.kind {
