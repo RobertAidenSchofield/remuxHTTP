@@ -17,6 +17,7 @@
 This project is an enhanced fork of [Remux](https://github.com/lostb1t/remux), a Rust media server that combines Stremio add-ons, local files, WebDAV sources, torrents, and music providers behind a Jellyfin-compatible API.
 
 This fork preserves Remux's core goal of working seamlessly with existing Jellyfin clients while introducing major streaming, networking, and tracking enhancements:
+
 1. **Direct HTTP Playback**: Reachable HTTP streams are passed straight to players as remote HTTP sources, and `/videos/{id}/stream` issues direct HTTP 302 redirects instead of relaying video bytes through the server.
 2. **Multi-User Simkl Scrobbling**: Native watch history tracking with a 1-click **RFC 8628 Device / PIN flow** (`simkl.com/pin`) right from the web dashboard.
 3. **Client IP Forwarding & LAN Protection**: Propagates each user's real public IP to Stremio add-ons (preventing shared-IP rate limits and debrid geo-blocks) while strictly filtering out private LAN subnets.
@@ -101,10 +102,12 @@ Remux includes native, multi-user [Simkl](https://simkl.com) scrobbling using Si
 ## Client IP Forwarding & Rate-Limit Protection
 
 In multi-user setups running on a shared server, NAS, or Docker host, all outbound requests to Stremio add-ons and debrid providers would normally share the server's single IP address. This causes:
+
 1. `HTTP 429 Too Many Requests` rate limits from scrapers and metadata add-ons.
 2. Account suspensions or locks from debrid providers enforcing single-IP policies.
 
 ### How Remux protects you:
+
 - **Transparent IP Forwarding**: Remux extracts each client's remote IP address (`X-Forwarded-For`, `X-Real-IP`, or connection socket) and forwards it to Stremio SDK calls.
 - **LAN & Private IP Filtering**: Private LAN IPs (such as `192.168.1.50` or loopback) are never forwarded to public providers.
 - **Proxy Header Sanitization**: Untrusted or internal headers like `CF-Connecting-IP` are dropped.
@@ -162,6 +165,7 @@ docker compose up -d
 ```
 
 #### Networking with AIOStreams for Direct Play
+
 When running Remux alongside AIOStreams in Docker, configure your AIOStreams add-on URL in the Remux dashboard using your **host's LAN IP or public domain** (e.g. `http://192.168.1.100:3000/manifest.json`), **not** internal Docker network names (`http://aiostreams:3000`). This ensures external players receive links they can actually resolve and connect to.
 
 ---
@@ -169,12 +173,14 @@ When running Remux alongside AIOStreams in Docker, configure your AIOStreams add
 ### 2. Local / Native Development
 
 #### Prerequisites
+
 - **Rust toolchain** (1.80+): `rustup default stable`
 - **Node.js** (v22+): For compiling `jellyfin-web`
 - **Cargo Make**: `cargo install --force cargo-make`
 - **Dioxus CLI** (0.7.9): `cargo install dioxus-cli --version 0.7.9 --locked`
 
 #### Setup & Build
+
 ```sh
 cp .env.example .env
 cargo make jellyfin-web
@@ -192,3 +198,4 @@ cargo build --release -p remux-server
 ## Contributing & License
 
 Issues, feature requests, and pull requests are welcome. Remux is licensed under the GPL-3.0 License.
+
