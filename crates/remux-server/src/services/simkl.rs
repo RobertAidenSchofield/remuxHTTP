@@ -9,7 +9,7 @@ use remux_sdks::simkl::{
     ScrobblePayload, SimklDeviceCodeResponse, SimklEpisode, SimklIds, SimklMovie, SimklShow,
     SimklTokenErrorResponse, SimklTokenResponse, SimklUserSettings,
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{AppContext, db};
@@ -416,7 +416,7 @@ impl SimklService {
         let status = resp.status();
         // 200/201 is success, 409 is soft-success (already scrobbled recently)
         if status.is_success() || status.as_u16() == 409 {
-            debug!(action, status = status.as_u16(), "Simkl scrobble successful");
+            info!(action, status = status.as_u16(), "[Simkl] Scrobble successful");
             Ok(())
         } else {
             let body = resp

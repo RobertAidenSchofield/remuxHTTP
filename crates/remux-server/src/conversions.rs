@@ -222,15 +222,26 @@ pub(crate) fn apply_filename_guess(
     }
     let mut estimated = false;
 
-    if let Some(filename) = source
+    let filename_opt = source
         .stream_info
         .as_ref()
-        .and_then(|si| {
-            si.filename
-                .as_deref()
-        })
-    {
-        let guess = guess_media_source_from_filename(filename);
+        .and_then(|si| si.filename.as_deref())
+        .or_else(|| {
+            source.stream_info.as_ref().and_then(|si| {
+                si.descriptor.as_http_url().and_then(|u| {
+                    url::Url::parse(u).ok().and_then(|parsed| {
+                        parsed
+                            .path_segments()?
+                            .next_back()
+                            .filter(|s| s.contains('.') && !s.ends_with('.'))
+                    })
+                })
+            })
+        });
+
+    if let Some(filename) = filename_opt {
+        let mut guess = guess_media_source_from_filename(filename);
+        enrich_media_streams_from_title(&mut guess.media_streams, &source.title);
         if !guess
             .media_streams
             .is_empty()
@@ -242,6 +253,13 @@ pub(crate) fn apply_filename_guess(
             {
                 info.container = guess.container;
             }
+            estimated = true;
+        }
+    } else {
+        let mut streams = Vec::new();
+        enrich_media_streams_from_title(&mut streams, &source.title);
+        if !streams.is_empty() {
+            info.media_streams = streams;
             estimated = true;
         }
     }
@@ -272,6 +290,213 @@ pub(crate) fn apply_filename_guess(
             .source = Some(api::ProbeOrigin::FilenameGuess);
     }
     estimated
+}
+
+fn map_language_name(name: &str) -> Option<(&'static str, &'static str)> {
+    let clean = name.trim().trim_matches(|c: char| !c.is_alphabetic()).to_ascii_lowercase();
+    match clean.as_str() {
+        "english" | "eng" => Some(("eng", "English")),
+        "spanish" | "spa" | "espanol" | "castellano" => Some(("spa", "Spanish")),
+        "french" | "fra" | "fre" | "francais" => Some(("fra", "French")),
+        "german" | "deu" | "ger" | "deutsch" => Some(("deu", "German")),
+        "italian" | "ita" | "italiano" => Some(("ita", "Italian")),
+        "portuguese" | "por" | "portugues" => Some(("por", "Portuguese")),
+        "russian" | "rus" => Some(("rus", "Russian")),
+        "japanese" | "jpn" => Some(("jpn", "Japanese")),
+        "korean" | "kor" => Some(("kor", "Korean")),
+        "chinese" | "zho" | "chi" | "mandarin" | "cantonese" => Some(("zho", "Chinese")),
+        "hindi" | "hin" => Some(("hin", "Hindi")),
+        "arabic" | "ara" => Some(("ara", "Arabic")),
+        "dutch" | "nld" | "dut" => Some(("nld", "Dutch")),
+        "polish" | "pol" => Some(("pol", "Polish")),
+        "swedish" | "swe" => Some(("swe", "Swedish")),
+        "danish" | "dan" => Some(("dan", "Danish")),
+        "norwegian" | "nor" => Some(("nor", "Norwegian")),
+        "finnish" | "fin" => Some(("fin", "Finnish")),
+        "turkish" | "tur" => Some(("tur", "Turkish")),
+        "greek" | "ell" | "gre" => Some(("ell", "Greek")),
+        "czech" | "ces" | "cze" => Some(("ces", "Czech")),
+        "hungarian" | "hun" => Some(("hun", "Hungarian")),
+        "ukrainian" | "ukr" => Some(("ukr", "Ukrainian")),
+        "romanian" | "ron" | "rum" => Some(("ron", "Romanian")),
+        "thai" | "tha" => Some(("tha", "Thai")),
+        "vietnamese" | "vie" => Some(("vie", "Vietnamese")),
+        "indonesian" | "ind" => Some(("ind", "Indonesian")),
+        "hebrew" | "heb" => Some(("heb", "Hebrew")),
+        "tagalog" | "tgl" | "filipino" => Some(("tgl", "Tagalog")),
+        "persian" | "fas" | "per" | "farsi" => Some(("fas", "Persian")),
+        "latvian" | "lav" => Some(("lav", "Latvian")),
+        "lithuanian" | "lit" => Some(("lit", "Lithuanian")),
+        "estonian" | "est" => Some(("est", "Estonian")),
+        "slovak" | "slk" | "slo" => Some(("slk", "Slovak")),
+        "slovenian" | "slv" => Some(("slv", "Slovenian")),
+        "bulgarian" | "bul" => Some(("bul", "Bulgarian")),
+        "croatian" | "hrv" => Some(("hrv", "Croatian")),
+        "serbian" | "srp" => Some(("srp", "Serbian")),
+        "icelandic" | "isl" | "ice" => Some(("isl", "Icelandic")),
+        "malay" | "msa" | "may" => Some(("msa", "Malay")),
+        "catalan" | "cat" => Some(("cat", "Catalan")),
+        "tamil" | "tam" => Some(("tam", "Tamil")),
+        "telugu" | "tel" => Some(("tel", "Telugu")),
+        "bengali" | "ben" => Some(("ben", "Bengali")),
+        "urdu" | "urd" => Some(("urd", "Urdu")),
+        _ => None,
+    }
+}
+
+fn extract_languages_from_section(section: &str) -> Vec<(&'static str, &'static str)> {
+    let mut langs = Vec::new();
+    for token in section.split(|c: char| matches!(c, '•' | '|' | '/' | ',' | ';' | '\n' | '+')) {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(mapped) = map_language_name(trimmed) {
+            if !langs.iter().any(|(code, _)| *code == mapped.0) {
+                langs.push(mapped);
+            }
+        }
+    }
+    langs
+}
+
+fn extract_language_section<'a>(title: &'a str, markers: &[&str], terminators: &[&str]) -> Option<&'a str> {
+    for marker in markers {
+        if let Some(idx) = title.find(marker) {
+            let start = idx + marker.len();
+            let slice = &title[start..];
+            let end = terminators
+                .iter()
+                .filter_map(|term| slice.find(term))
+                .min()
+                .unwrap_or(slice.len());
+            let section = slice[..end].trim();
+            if !section.is_empty() {
+                return Some(section);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn enrich_media_streams_from_title(
+    streams: &mut Vec<api::MediaStream>,
+    title: &str,
+) {
+    let audio_section = extract_language_section(
+        title,
+        &["🌎", "🌐", "Audio:", "audio:"],
+        &["📝", "💬", "Subtitles:", "subtitles:", "Subs:", "📦", "📁", "\n\n"],
+    );
+    let audio_langs = audio_section.map(extract_languages_from_section).unwrap_or_default();
+
+    let sub_section = extract_language_section(
+        title,
+        &["📝", "💬", "Subtitles:", "subtitles:", "Subs:"],
+        &["🌎", "🌐", "Audio:", "audio:", "📦", "📁", "\n\n"],
+    );
+    let sub_langs = sub_section.map(extract_languages_from_section).unwrap_or_default();
+
+    if audio_langs.is_empty() && sub_langs.is_empty() {
+        return;
+    }
+
+    let existing_audio_idx = streams.iter().position(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)));
+
+    let (base_codec, base_channels, base_title) = if let Some(idx) = existing_audio_idx {
+        (
+            streams[idx].codec.clone(),
+            streams[idx].channels,
+            streams[idx].display_title.clone(),
+        )
+    } else {
+        (Some("aac".to_string()), Some(2), Some("Audio".to_string()))
+    };
+
+    let mut next_idx = streams.iter().map(|s| s.index).max().unwrap_or(-1) + 1;
+
+    if !audio_langs.is_empty() {
+        let (first_lang_code, first_lang_name) = audio_langs[0];
+        if let Some(idx) = existing_audio_idx {
+            if streams[idx].language.is_none() {
+                streams[idx].language = Some(first_lang_code.to_string());
+                let meta = StreamMeta {
+                    language: Some(first_lang_name),
+                    codec: base_codec.as_deref(),
+                    channels: base_channels,
+                    ..Default::default()
+                };
+                streams[idx].display_title = display_title_audio(&meta).or_else(|| {
+                    Some(format!("{} - {}", first_lang_name, base_title.as_deref().unwrap_or("Audio")))
+                });
+                streams[idx].is_default = Some(true);
+            }
+        } else {
+            let meta = StreamMeta {
+                language: Some(first_lang_name),
+                codec: base_codec.as_deref(),
+                channels: base_channels,
+                ..Default::default()
+            };
+            streams.push(api::MediaStream {
+                index: next_idx,
+                type_: Some(api::MediaStreamType::Audio),
+                codec: base_codec.clone(),
+                channels: base_channels,
+                language: Some(first_lang_code.to_string()),
+                display_title: display_title_audio(&meta).or_else(|| {
+                    Some(format!("{} - {}", first_lang_name, base_title.as_deref().unwrap_or("Audio")))
+                }),
+                is_default: Some(true),
+                ..Default::default()
+            });
+            next_idx += 1;
+        }
+
+        // Add remaining audio tracks if not already present
+        for (code, name) in &audio_langs[1..] {
+            if streams.iter().any(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)) && s.language.as_deref() == Some(*code)) {
+                continue;
+            }
+            let meta = StreamMeta {
+                language: Some(name),
+                codec: base_codec.as_deref(),
+                channels: base_channels,
+                ..Default::default()
+            };
+            streams.push(api::MediaStream {
+                index: next_idx,
+                type_: Some(api::MediaStreamType::Audio),
+                codec: base_codec.clone(),
+                channels: base_channels,
+                language: Some(code.to_string()),
+                display_title: display_title_audio(&meta).or_else(|| {
+                    Some(format!("{} - {}", name, base_title.as_deref().unwrap_or("Audio")))
+                }),
+                is_default: Some(false),
+                ..Default::default()
+            });
+            next_idx += 1;
+        }
+    }
+
+    // Add subtitle tracks if no subtitles currently exist in streams
+    let has_subtitles = streams.iter().any(|s| matches!(s.type_, Some(api::MediaStreamType::Subtitle)));
+    if !has_subtitles && !sub_langs.is_empty() {
+        for (code, name) in sub_langs {
+            streams.push(api::MediaStream {
+                index: next_idx,
+                type_: Some(api::MediaStreamType::Subtitle),
+                codec: Some("subrip".to_string()),
+                language: Some(code.to_string()),
+                display_title: Some(name.to_string()),
+                is_default: Some(false),
+                is_text_subtitle_stream: true,
+                ..Default::default()
+            });
+            next_idx += 1;
+        }
+    }
 }
 
 /// The subset of a filename-guessed `MediaSourceInfo` worth persisting to
@@ -438,6 +663,19 @@ impl From<db::Media> for api::MediaSourceInfo {
                 p.media_streams
             })
             .unwrap_or_default();
+
+        if media_streams.is_empty() {
+            let mut guess_info = api::MediaSourceInfo::default();
+            apply_filename_guess(&mut guess_info, &source);
+            media_streams = guess_info.media_streams;
+        } else if media_streams
+            .iter()
+            .filter(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)))
+            .count()
+            <= 1
+        {
+            enrich_media_streams_from_title(&mut media_streams, &source.title);
+        }
 
         // Derive display_title for any stream that doesn't have one yet.
         // This covers streams loaded from RemuxDB probe data where only raw
@@ -1243,5 +1481,47 @@ mod tests {
             2
         );
         assert_eq!(output["TrackEvents"][1]["Text"], "World");
+    }
+
+    #[test]
+    fn test_enrich_media_streams_from_title() {
+        let title = "✨ 4K 🎫 \nWEB-DL\n🔆 HDR10 • DV  🔊 Atmos • DD+\n📦 25 GB \n🌎 English • Spanish • French • German • Italian📝 English • Russian • Spanish";
+        let mut streams = vec![
+            api::MediaStream {
+                index: 0,
+                type_: Some(api::MediaStreamType::Video),
+                codec: Some("hevc".into()),
+                ..Default::default()
+            },
+            api::MediaStream {
+                index: 1,
+                type_: Some(api::MediaStreamType::Audio),
+                codec: Some("eac3".into()),
+                channels: Some(6),
+                ..Default::default()
+            },
+        ];
+
+        enrich_media_streams_from_title(&mut streams, title);
+
+        let audio_streams: Vec<_> = streams
+            .iter()
+            .filter(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)))
+            .collect();
+        assert_eq!(audio_streams.len(), 5);
+        assert_eq!(audio_streams[0].language.as_deref(), Some("eng"));
+        assert_eq!(audio_streams[1].language.as_deref(), Some("spa"));
+        assert_eq!(audio_streams[2].language.as_deref(), Some("fra"));
+        assert_eq!(audio_streams[3].language.as_deref(), Some("deu"));
+        assert_eq!(audio_streams[4].language.as_deref(), Some("ita"));
+
+        let sub_streams: Vec<_> = streams
+            .iter()
+            .filter(|s| matches!(s.type_, Some(api::MediaStreamType::Subtitle)))
+            .collect();
+        assert_eq!(sub_streams.len(), 3);
+        assert_eq!(sub_streams[0].language.as_deref(), Some("eng"));
+        assert_eq!(sub_streams[1].language.as_deref(), Some("rus"));
+        assert_eq!(sub_streams[2].language.as_deref(), Some("spa"));
     }
 }

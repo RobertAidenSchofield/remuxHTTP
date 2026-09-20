@@ -881,6 +881,17 @@ fn media_info_from_probe(
                 nzb,
                 si.filename
                     .clone()
+                    .or_else(|| {
+                        si.descriptor.as_http_url().and_then(|u| {
+                            url::Url::parse(u).ok().and_then(|parsed| {
+                                parsed
+                                    .path_segments()?
+                                    .next_back()
+                                    .filter(|s| s.contains('.') && !s.ends_with('.'))
+                                    .and_then(|s| urlencoding::decode(s).ok().map(|c| c.into_owned()))
+                            })
+                        })
+                    })
                     .unwrap_or_else(|| {
                         stream
                             .title
@@ -898,7 +909,7 @@ fn media_info_from_probe(
         ),
     };
 
-    if info_hash.is_none() && nzb.is_none() {
+    if (info_hash.is_none() && nzb.is_none()) || !filename.contains('.') {
         return None;
     }
 

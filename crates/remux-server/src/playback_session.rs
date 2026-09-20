@@ -441,7 +441,7 @@ impl PlaybackSessionManager {
                 position_ticks,
                 audio_idx,
                 subtitle_idx,
-                media.runtime,
+                None,
             )
             .await?;
         }

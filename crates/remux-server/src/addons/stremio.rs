@@ -1520,6 +1520,17 @@ fn stremio_stream_metadata(stream: &sdks::stremio::Stream) -> StremioStreamMetad
                 stream
                     .filename
                     .clone()
+            })
+            .or_else(|| {
+                stream.url.as_ref().and_then(|u| {
+                    url::Url::parse(u).ok().and_then(|parsed| {
+                        parsed
+                            .path_segments()?
+                            .next_back()
+                            .filter(|s| s.contains('.') && !s.ends_with('.'))
+                            .and_then(|s| urlencoding::decode(s).ok().map(|c| c.into_owned()))
+                    })
+                })
             }),
         file_idx: stream
             .file_idx
