@@ -36,6 +36,7 @@ const PLAYBACK_SYNC_COOLDOWN: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct PendingDeviceAuth {
+    pub device_code: Option<String>,
     pub user_code: String,
     pub verification_uri: String,
     pub verification_uri_complete: Option<String>,
@@ -504,7 +505,9 @@ impl SimklService {
             .trim_matches('\'')
             .trim();
 
-        let url = format!("{SIMKL_API_BASE}/scrobble/{action}?client_id={client_id}");
+        let url = format!(
+            "{SIMKL_API_BASE}/scrobble/{action}?client_id={client_id}&app-name=remux&app-version=1.0"
+        );
         info!(
             action,
             client_id_prefix = &client_id[..client_id
@@ -555,7 +558,9 @@ impl SimklService {
             .trim_matches('\'')
             .trim();
 
-        let url = format!("{SIMKL_API_BASE}/users/settings?client_id={client_id}");
+        let url = format!(
+            "{SIMKL_API_BASE}/users/settings?client_id={client_id}&app-name=remux&app-version=1.0"
+        );
         info!(
             client_id_prefix = &client_id[..client_id
                 .len()
@@ -599,7 +604,8 @@ impl SimklService {
         }
     }
 
-    /// Request a new device PIN for a user from Simkl API via `GET /oauth/pin`.
+    /// Request a new device PIN or OAuth 2.0 device code for a user.
+    /// Prefers OAuth 2.0 Device Flow (V2: POST /oauth2/device) and falls back to legacy V1 (GET /oauth/pin).
     pub async fn start_device_auth(
         client_id: &str,
         user_id: Uuid,
@@ -617,60 +623,132 @@ impl SimklService {
             );
         }
 
-        let mut url = format!("{SIMKL_API_BASE}/oauth/pin?client_id={client_id}");
-        if let Some(redirect) = redirect_uri.filter(|r| {
-            !r.trim()
-                .is_empty()
-        }) {
-            url.push_str(&format!(
-                "&redirect={}",
-                urlencoding::encode(redirect.trim())
-            ));
-        }
         info!(
             %user_id,
             client_id_prefix = &client_id[..client_id.len().min(4)],
             redirect = ?redirect_uri,
-            "[Simkl] Requesting device PIN from Simkl"
+            "[Simkl] Requesting device authorization from Simkl"
         );
 
-        let resp = HTTP_CLIENT
-            .get(&url)
-            .header("simkl-api-key", client_id)
+        // 1. Try OAuth 2.0 Device Flow (V2) first (required for all modern Simkl apps)
+        let v2_body = serde_json::json!({
+            "client_id": client_id,
+            "scope": "media:read media:write",
+        });
+
+        let v2_resp = HTTP_CLIENT
+            .post(format!("{SIMKL_API_BASE}/oauth2/device"))
+            .header("User-Agent", "remux-server/1.0")
             .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .json(&v2_body)
             .send()
             .await
             .context("Failed to connect to Simkl API")?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp
+        let v2_status = v2_resp.status();
+        let device_resp: SimklDeviceCodeResponse = if v2_status.is_success() {
+            v2_resp
+                .json()
+                .await
+                .context("Failed to parse Simkl V2 device code response")?
+        } else {
+            let v2_body_text = v2_resp
                 .text()
                 .await
                 .unwrap_or_default();
-            warn!(status = status.as_u16(), body = %body, "[Simkl] Device PIN request failed");
+            let is_v1_fallback = v2_status.as_u16() == 401
+                && (v2_body_text.contains("not enabled for OAuth 2.0")
+                    || v2_body_text.contains("invalid_client"));
 
-            if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(&body) {
-                if let Some(msg) = err_json
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                {
-                    anyhow::bail!("Simkl API: {msg}");
+            if is_v1_fallback {
+                info!(%user_id, "[Simkl] Client is not an OAuth 2.0 app; falling back to V1 PIN flow");
+                let mut url =
+                    format!("{SIMKL_API_BASE}/oauth/pin?client_id={client_id}");
+                if let Some(redirect) = redirect_uri.filter(|r| {
+                    !r.trim()
+                        .is_empty()
+                }) {
+                    url.push_str(&format!(
+                        "&redirect={}",
+                        urlencoding::encode(redirect.trim())
+                    ));
                 }
+                let resp = HTTP_CLIENT
+                    .get(&url)
+                    .header("simkl-api-key", client_id)
+                    .header("Accept", "application/json")
+                    .send()
+                    .await
+                    .context("Failed to connect to Simkl API")?;
+
+                let status = resp.status();
+                if !status.is_success() {
+                    let body = resp
+                        .text()
+                        .await
+                        .unwrap_or_default();
+                    warn!(status = status.as_u16(), body = %body, "[Simkl] V1 Device PIN request failed");
+                    if let Ok(err_json) =
+                        serde_json::from_str::<serde_json::Value>(&body)
+                    {
+                        if let Some(msg) = err_json
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                        {
+                            anyhow::bail!("Simkl API: {msg}");
+                        }
+                    }
+                    anyhow::bail!(
+                        "Simkl device authorization failed ({status}): {body}"
+                    );
+                }
+
+                resp.json()
+                    .await
+                    .context("Failed to parse Simkl device code response")?
+            } else {
+                warn!(status = v2_status.as_u16(), body = %v2_body_text, "[Simkl] OAuth 2.0 device authorization failed");
+                if let Ok(err_json) =
+                    serde_json::from_str::<serde_json::Value>(&v2_body_text)
+                {
+                    if let Some(desc) = err_json
+                        .get("error_description")
+                        .and_then(|d| d.as_str())
+                    {
+                        anyhow::bail!("Simkl API: {desc}");
+                    }
+                    if let Some(msg) = err_json
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                    {
+                        anyhow::bail!("Simkl API: {msg}");
+                    }
+                }
+                anyhow::bail!(
+                    "Simkl device authorization failed ({v2_status}): {v2_body_text}"
+                );
             }
-            anyhow::bail!("Simkl device authorization failed ({status}): {body}");
-        }
+        };
 
-        let mut device_resp: SimklDeviceCodeResponse = resp
-            .json()
-            .await
-            .context("Failed to parse Simkl device code response")?;
-
+        let mut device_resp = device_resp;
         if device_resp
             .verification_uri
             .is_empty()
         {
             device_resp.verification_uri = "https://simkl.com/pin".to_string();
+        }
+        if device_resp
+            .verification_uri_complete
+            .is_none()
+            && !device_resp
+                .user_code
+                .is_empty()
+        {
+            device_resp.verification_uri_complete = Some(format!(
+                "{}?user_code={}",
+                device_resp.verification_uri, device_resp.user_code
+            ));
         }
 
         let expires_at = Instant::now()
@@ -691,6 +769,9 @@ impl SimklService {
             .insert(
                 user_id,
                 PendingDeviceAuth {
+                    device_code: device_resp
+                        .device_code
+                        .clone(),
                     user_code: device_resp
                         .user_code
                         .clone(),
@@ -709,13 +790,14 @@ impl SimklService {
         info!(
             %user_id,
             user_code = %device_resp.user_code,
+            is_v2 = device_resp.device_code.is_some(),
             verification_uri = %device_resp.verification_uri,
-            "[Simkl] Device PIN generated successfully"
+            "[Simkl] Device authorization initialized successfully"
         );
         Ok(device_resp)
     }
 
-    /// Poll for token approval from Simkl API via `GET /oauth/pin/{user_code}`.
+    /// Poll for token approval from Simkl API via OAuth 2.0 V2 (`POST /oauth2/token`) or V1 (`GET /oauth/pin/{user_code}`).
     pub async fn poll_device_auth(
         ctx: &AppContext,
         client_id: &str,
@@ -776,6 +858,150 @@ impl SimklService {
             p.last_polled_at = pending.last_polled_at;
         }
 
+        if let Some(ref device_code) = pending.device_code {
+            // OAuth 2.0 Device Flow (V2)
+            let form = [
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("client_id", client_id),
+                ("device_code", device_code.as_str()),
+            ];
+
+            let resp = HTTP_CLIENT
+                .post(format!("{SIMKL_API_BASE}/oauth2/token"))
+                .header("User-Agent", "remux-server/1.0")
+                .header("Accept", "application/json")
+                .form(&form)
+                .send()
+                .await
+                .context("Failed to poll Simkl token endpoint")?;
+
+            let status = resp.status();
+            if status.is_success() {
+                let token_resp: remux_sdks::simkl::SimklTokenResponse = resp
+                    .json()
+                    .await
+                    .context("Failed to parse Simkl token response")?;
+
+                if !token_resp
+                    .access_token
+                    .is_empty()
+                {
+                    let mut user_cfg = db::Settings::get_user_simkl_config(
+                        &ctx.db,
+                        &ctx.config
+                            .simkl,
+                        &user_id,
+                    )
+                    .await
+                    .unwrap_or_default();
+                    user_cfg.enabled = true;
+                    user_cfg.user_token = token_resp.access_token;
+                    db::Settings::set_user_simkl_config(
+                        &ctx.db,
+                        &ctx.config
+                            .simkl,
+                        &user_id,
+                        user_cfg,
+                    )
+                    .await?;
+
+                    PENDING_DEVICE_AUTHS
+                        .lock()
+                        .unwrap()
+                        .remove(&user_id);
+                    info!(%user_id, "[Simkl] OAuth 2.0 device authorization approved by user");
+                    return Ok(SimklPollResultDto {
+                        status: "success".to_string(),
+                        message: Some("Connected successfully to Simkl!".to_string()),
+                    });
+                }
+            } else if status.as_u16() == 400 {
+                let body = resp
+                    .text()
+                    .await
+                    .unwrap_or_default();
+                if let Ok(err) = serde_json::from_str::<
+                    remux_sdks::simkl::SimklTokenErrorResponse,
+                >(&body)
+                {
+                    match err
+                        .error
+                        .as_str()
+                    {
+                        "authorization_pending" => {
+                            return Ok(SimklPollResultDto {
+                                status: "pending".to_string(),
+                                message: None,
+                            });
+                        }
+                        "slow_down" => {
+                            if let Some(p) = PENDING_DEVICE_AUTHS
+                                .lock()
+                                .unwrap()
+                                .get_mut(&user_id)
+                            {
+                                p.interval += Duration::from_secs(5);
+                            }
+                            return Ok(SimklPollResultDto {
+                                status: "pending".to_string(),
+                                message: None,
+                            });
+                        }
+                        "expired_token" => {
+                            PENDING_DEVICE_AUTHS
+                                .lock()
+                                .unwrap()
+                                .remove(&user_id);
+                            return Ok(SimklPollResultDto {
+                                status: "expired".to_string(),
+                                message: Some(
+                                    "Authorization code expired. Please start again."
+                                        .to_string(),
+                                ),
+                            });
+                        }
+                        other => {
+                            PENDING_DEVICE_AUTHS
+                                .lock()
+                                .unwrap()
+                                .remove(&user_id);
+                            let desc = err
+                                .error_description
+                                .unwrap_or_else(|| other.to_string());
+                            return Ok(SimklPollResultDto {
+                                status: "error".to_string(),
+                                message: Some(desc),
+                            });
+                        }
+                    }
+                } else {
+                    PENDING_DEVICE_AUTHS
+                        .lock()
+                        .unwrap()
+                        .remove(&user_id);
+                    return Ok(SimklPollResultDto {
+                        status: "error".to_string(),
+                        message: Some(format!("Simkl API error (400): {body}")),
+                    });
+                }
+            } else {
+                let body = resp
+                    .text()
+                    .await
+                    .unwrap_or_default();
+                PENDING_DEVICE_AUTHS
+                    .lock()
+                    .unwrap()
+                    .remove(&user_id);
+                warn!(%user_id, status = status.as_u16(), body = %body, "[Simkl] OAuth 2.0 token polling returned error");
+                return Ok(SimklPollResultDto {
+                    status: "error".to_string(),
+                    message: Some(format!("Simkl API error ({status}): {body}")),
+                });
+            }
+        }
+
+        // V1 legacy PIN flow polling (when device_code is None)
         let url = format!(
             "{SIMKL_API_BASE}/oauth/pin/{}?client_id={client_id}",
             pending.user_code
@@ -924,7 +1150,7 @@ impl SimklService {
             .trim();
 
         let url = format!(
-            "{SIMKL_API_BASE}/sync/playback?hide_watched=true&client_id={client_id}"
+            "{SIMKL_API_BASE}/sync/playback?hide_watched=true&client_id={client_id}&app-name=remux&app-version=1.0"
         );
         info!(
             client_id_prefix = &client_id[..client_id
