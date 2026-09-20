@@ -172,6 +172,7 @@ pub async fn update_user_simkl_settings(
     };
 
     let has_token = !new_token.is_empty();
+
     let user_config = crate::SimklUserConfig {
         enabled: payload.enabled,
         user_token: new_token,
