@@ -225,7 +225,7 @@ pub(crate) fn apply_filename_guess(
     let filename_opt = source
         .stream_info
         .as_ref()
-        .and_then(|si| si.filename.as_deref())
+        .and_then(|si| si.filename.clone())
         .or_else(|| {
             source.stream_info.as_ref().and_then(|si| {
                 si.descriptor.as_http_url().and_then(|u| {
@@ -234,13 +234,14 @@ pub(crate) fn apply_filename_guess(
                             .path_segments()?
                             .next_back()
                             .filter(|s| s.contains('.') && !s.ends_with('.'))
+                            .map(str::to_owned)
                     })
                 })
             })
         });
 
     if let Some(filename) = filename_opt {
-        let mut guess = guess_media_source_from_filename(filename);
+        let mut guess = guess_media_source_from_filename(&filename);
         enrich_media_streams_from_title(&mut guess.media_streams, &source.title);
         if !guess
             .media_streams
@@ -654,13 +655,15 @@ impl From<db::Media> for api::MediaSourceInfo {
             .and_then(|p| p.size);
         let mut media_streams = source
             .probe_data
-            .map(|mut p| {
-                for s in &mut p.media_streams {
+            .as_ref()
+            .map(|p| {
+                let mut media_streams = p.media_streams.clone();
+                for s in &mut media_streams {
                     if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
                         s.is_text_subtitle_stream = s.is_text_subtitle_stream();
                     }
                 }
-                p.media_streams
+                media_streams
             })
             .unwrap_or_default();
 
