@@ -20,7 +20,9 @@ impl Auth for SimklAuth {
     }
 }
 
-fn deserialize_opt_string_or_number<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+fn deserialize_opt_string_or_number<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -28,7 +30,9 @@ where
     let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
     match opt {
         Some(serde_json::Value::String(s)) => {
-            if s.trim().is_empty() {
+            if s.trim()
+                .is_empty()
+            {
                 Ok(None)
             } else {
                 Ok(Some(s))
@@ -39,7 +43,9 @@ where
     }
 }
 
-fn deserialize_opt_i64_flexible<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+fn deserialize_opt_i64_flexible<'de, D>(
+    deserializer: D,
+) -> Result<Option<i64>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -47,20 +53,38 @@ where
     let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
     match opt {
         Some(serde_json::Value::Number(n)) => Ok(n.as_i64()),
-        Some(serde_json::Value::String(s)) => Ok(s.parse::<i64>().ok()),
+        Some(serde_json::Value::String(s)) => Ok(s
+            .parse::<i64>()
+            .ok()),
         _ => Ok(None),
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct SimklIds {
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_opt_i64_flexible")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_opt_i64_flexible"
+    )]
     pub simkl: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_opt_string_or_number")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_opt_string_or_number"
+    )]
     pub imdb: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_opt_string_or_number")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_opt_string_or_number"
+    )]
     pub tmdb: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_opt_string_or_number")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_opt_string_or_number"
+    )]
     pub tvdb: Option<String>,
 }
 
@@ -117,7 +141,11 @@ pub struct SimklPlaybackItem {
 
 impl SimklPlaybackItem {
     pub fn timestamp(&self) -> Option<&str> {
-        self.paused_at.as_deref().or(self.watched_at.as_deref())
+        self.paused_at
+            .as_deref()
+            .or(self
+                .watched_at
+                .as_deref())
     }
 }
 
@@ -236,13 +264,40 @@ impl Endpoint for UserSettingsEndpoint {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct SimklDeviceCodeResponse {
-    pub device_code: String,
+    #[serde(default)]
+    pub device_code: Option<String>,
+    #[serde(default)]
     pub user_code: String,
+    #[serde(default, alias = "verification_url")]
     pub verification_uri: String,
     #[serde(default)]
     pub verification_uri_complete: Option<String>,
+    #[serde(default = "default_device_code_expires_in")]
     pub expires_in: u64,
+    #[serde(default = "default_device_code_interval")]
     pub interval: u64,
+}
+
+fn default_device_code_expires_in() -> u64 {
+    900
+}
+
+fn default_device_code_interval() -> u64 {
+    5
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct SimklPinPollResponse {
+    #[serde(default)]
+    pub result: String,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub access_token: Option<String>,
+    #[serde(default)]
+    pub token_type: Option<String>,
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -382,23 +437,115 @@ mod tests {
         let m = &items[0];
         assert_eq!(m.progress, 45.5);
         assert_eq!(m.timestamp(), Some("2026-09-20T10:30:00Z"));
-        assert_eq!(m.item_type.as_deref(), Some("movie"));
-        let movie = m.movie.as_ref().unwrap();
-        assert_eq!(movie.title.as_deref(), Some("Gladiator II"));
-        assert_eq!(movie.ids.imdb.as_deref(), Some("tt2104996"));
-        assert_eq!(movie.ids.tmdb.as_deref(), Some("558449"));
+        assert_eq!(
+            m.item_type
+                .as_deref(),
+            Some("movie")
+        );
+        let movie = m
+            .movie
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            movie
+                .title
+                .as_deref(),
+            Some("Gladiator II")
+        );
+        assert_eq!(
+            movie
+                .ids
+                .imdb
+                .as_deref(),
+            Some("tt2104996")
+        );
+        assert_eq!(
+            movie
+                .ids
+                .tmdb
+                .as_deref(),
+            Some("558449")
+        );
 
         let ep = &items[1];
         assert_eq!(ep.progress, 62.0);
         assert_eq!(ep.timestamp(), Some("2026-09-20T11:00:00Z"));
-        assert_eq!(ep.item_type.as_deref(), Some("episode"));
-        let show = ep.show.as_ref().unwrap();
-        assert_eq!(show.ids.simkl, Some(39687));
-        assert_eq!(show.ids.imdb.as_deref(), Some("tt4574334"));
-        assert_eq!(show.ids.tvdb.as_deref(), Some("305288"));
-        let episode = ep.episode.as_ref().unwrap();
+        assert_eq!(
+            ep.item_type
+                .as_deref(),
+            Some("episode")
+        );
+        let show = ep
+            .show
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            show.ids
+                .simkl,
+            Some(39687)
+        );
+        assert_eq!(
+            show.ids
+                .imdb
+                .as_deref(),
+            Some("tt4574334")
+        );
+        assert_eq!(
+            show.ids
+                .tvdb
+                .as_deref(),
+            Some("305288")
+        );
+        let episode = ep
+            .episode
+            .as_ref()
+            .unwrap();
         assert_eq!(episode.season, 2);
         assert_eq!(episode.number, 5);
     }
-}
 
+    #[test]
+    fn test_deserialize_pin_device_code_response() {
+        let json = r#"{
+            "user_code": "AB12C",
+            "verification_url": "https://simkl.com/pin",
+            "expires_in": 900,
+            "interval": 5,
+            "device_code": "DEVICE_CODE"
+        }"#;
+
+        let resp: SimklDeviceCodeResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.user_code, "AB12C");
+        assert_eq!(resp.verification_uri, "https://simkl.com/pin");
+        assert_eq!(resp.expires_in, 900);
+        assert_eq!(resp.interval, 5);
+    }
+
+    #[test]
+    fn test_deserialize_pin_poll_pending_and_success() {
+        let pending_json = r#"{"result": "KO", "message": "Authorization pending"}"#;
+        let pending: SimklPinPollResponse = serde_json::from_str(pending_json).unwrap();
+        assert_eq!(pending.result, "KO");
+        assert_eq!(
+            pending
+                .message
+                .as_deref(),
+            Some("Authorization pending")
+        );
+        assert!(
+            pending
+                .access_token
+                .is_none()
+        );
+
+        let success_json = r#"{"result": "OK", "access_token": "token_abc123", "token_type": "Bearer"}"#;
+        let success: SimklPinPollResponse = serde_json::from_str(success_json).unwrap();
+        assert_eq!(success.result, "OK");
+        assert_eq!(
+            success
+                .access_token
+                .as_deref(),
+            Some("token_abc123")
+        );
+    }
+}

@@ -211,7 +211,7 @@ pub fn load_config(
 /// [`load_config`] against the process environment — the common case for a
 /// binary with no need to inject a custom source (tests aside).
 pub fn load_config_from_env() -> std::result::Result<Config, config::ConfigError> {
-    load_config(config::Environment::default())
+    load_config(config::Environment::default().separator("__"))
 }
 
 #[cfg(unix)]
@@ -357,8 +357,11 @@ pub async fn init_app(
         ws_tx: ws_tx.clone(),
     });
 
-    let (regex_service, dynamic_regex) =
-        services::regex_sync::RegexSyncService::new(config.dynamic_regex.clone());
+    let (regex_service, dynamic_regex) = services::regex_sync::RegexSyncService::new(
+        config
+            .dynamic_regex
+            .clone(),
+    );
     let _regex_worker = Arc::new(regex_service).spawn_sync_worker();
 
     let mut ctx = AppContext {
@@ -774,15 +777,62 @@ impl Config {
                     .into_owned(),
             );
         }
-        if self.dynamic_regex.fallback_cache_path.is_empty() {
-            self.dynamic_regex.fallback_cache_path = self
+        if self
+            .dynamic_regex
+            .fallback_cache_path
+            .is_empty()
+        {
+            self.dynamic_regex
+                .fallback_cache_path = self
                 .data_dir
                 .join("regex_cache.json")
                 .to_string_lossy()
                 .into_owned();
         }
-        if self.dynamic_regex.sync_interval_secs == 0 {
-            self.dynamic_regex.sync_interval_secs = 3600;
+        if self
+            .dynamic_regex
+            .sync_interval_secs
+            == 0
+        {
+            self.dynamic_regex
+                .sync_interval_secs = 3600;
+        }
+        if self
+            .simkl
+            .client_id
+            .is_empty()
+        {
+            if let Ok(id) = std::env::var("SIMKL_CLIENT_ID")
+                .or_else(|_| std::env::var("SIMKL__CLIENT_ID"))
+            {
+                let trimmed = id.trim();
+                if !trimmed.is_empty() {
+                    self.simkl
+                        .client_id = trimmed.to_string();
+                }
+            }
+        }
+        if self
+            .simkl
+            .completion_threshold
+            == 0
+        {
+            if let Ok(threshold_str) = std::env::var("SIMKL_COMPLETION_THRESHOLD")
+                .or_else(|_| std::env::var("SIMKL__COMPLETION_THRESHOLD"))
+            {
+                if let Ok(val) = threshold_str.parse::<u32>() {
+                    self.simkl
+                        .completion_threshold = val;
+                }
+            }
+        }
+        if self
+            .simkl
+            .completion_threshold
+            == 0
+        {
+            self.simkl
+                .completion_threshold = 80;
         }
         self
     }

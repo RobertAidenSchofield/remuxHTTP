@@ -98,7 +98,8 @@ impl StreamService {
                         &mut parent,
                         &self.ctx,
                         self.user_id,
-                        self.client_ip.as_deref(),
+                        self.client_ip
+                            .as_deref(),
                     )
                     .await
                     .inspect_err(|e| tracing::error!("refresh_streams failed: {e:#}"));
@@ -123,7 +124,8 @@ impl StreamService {
                 &mut root,
                 &self.ctx,
                 self.user_id,
-                self.client_ip.as_deref(),
+                self.client_ip
+                    .as_deref(),
             )
             .await
             .inspect_err(|e| tracing::error!("refresh_streams failed: {e:#}"));
@@ -610,11 +612,17 @@ impl StreamService {
             let reachable_http_url = effective_stream
                 .stream_info
                 .as_ref()
-                .and_then(|si| si.descriptor.as_http_url())
+                .and_then(|si| {
+                    si.descriptor
+                        .as_http_url()
+                })
                 .filter(|url| {
                     url::Url::parse(url)
                         .ok()
-                        .and_then(|u| u.host_str().map(|h| !crate::stream::is_internal_host(h)))
+                        .and_then(|u| {
+                            u.host_str()
+                                .map(|h| !crate::stream::is_internal_host(h))
+                        })
                         .unwrap_or(false)
                 });
 
@@ -882,15 +890,25 @@ fn media_info_from_probe(
                 si.filename
                     .clone()
                     .or_else(|| {
-                        si.descriptor.as_http_url().and_then(|u| {
-                            url::Url::parse(u).ok().and_then(|parsed| {
-                                parsed
-                                    .path_segments()?
-                                    .next_back()
-                                    .filter(|s| s.contains('.') && !s.ends_with('.'))
-                                    .and_then(|s| urlencoding::decode(s).ok().map(|c| c.into_owned()))
+                        si.descriptor
+                            .as_http_url()
+                            .and_then(|u| {
+                                url::Url::parse(u)
+                                    .ok()
+                                    .and_then(|parsed| {
+                                        parsed
+                                            .path_segments()?
+                                            .next_back()
+                                            .filter(|s| {
+                                                s.contains('.') && !s.ends_with('.')
+                                            })
+                                            .and_then(|s| {
+                                                urlencoding::decode(s)
+                                                    .ok()
+                                                    .map(|c| c.into_owned())
+                                            })
+                                    })
                             })
-                        })
                     })
                     .unwrap_or_else(|| {
                         stream
@@ -916,20 +934,38 @@ fn media_info_from_probe(
     let filename = if filename.contains('.') && !filename.ends_with('.') {
         filename
     } else {
-        let ext = match probe.container.as_ref() {
+        let ext = match probe
+            .container
+            .as_ref()
+        {
             Some(VideoContainer::Mkv) => "mkv",
-            Some(VideoContainer::Mp4 | VideoContainer::M4v | VideoContainer::Mov) => "mp4",
+            Some(VideoContainer::Mp4 | VideoContainer::M4v | VideoContainer::Mov) => {
+                "mp4"
+            }
             Some(VideoContainer::Webm) => "webm",
             Some(VideoContainer::Avi) => "avi",
             Some(VideoContainer::Ts) => "ts",
             Some(VideoContainer::Other(container))
-                if container.contains("mkv") || container.contains("matroska") => "mkv",
+                if container.contains("mkv") || container.contains("matroska") =>
+            {
+                "mkv"
+            }
             Some(VideoContainer::Other(container))
-                if container.contains("mp4") || container.contains("mov") => "mp4",
-            Some(VideoContainer::Other(container)) if container.contains("webm") => "webm",
-            Some(VideoContainer::Other(container)) if container.contains("avi") => "avi",
+                if container.contains("mp4") || container.contains("mov") =>
+            {
+                "mp4"
+            }
+            Some(VideoContainer::Other(container)) if container.contains("webm") => {
+                "webm"
+            }
+            Some(VideoContainer::Other(container)) if container.contains("avi") => {
+                "avi"
+            }
             Some(VideoContainer::Other(container))
-                if container.contains("ts") || container.contains("mpegts") => "ts",
+                if container.contains("ts") || container.contains("mpegts") =>
+            {
+                "ts"
+            }
             _ => "mkv",
         };
         format!("{filename}.{ext}")
@@ -1102,15 +1138,17 @@ mod tests {
 
         // B played with MediaSourceId = A.id (what the auto-play rewrite hands
         // out). Before the fix: Err("stream not found: <A.id>").
-        let resolved = StreamService::lookup(ctx, dup.id, Some(owner.id), None, None, None)
-            .await
-            .expect("an item id used as MediaSourceId must resolve to a stream");
+        let resolved =
+            StreamService::lookup(ctx, dup.id, Some(owner.id), None, None, None)
+                .await
+                .expect("an item id used as MediaSourceId must resolve to a stream");
         assert_eq!(resolved.id, stream.id);
 
         // Plain auto-play (MediaSourceId == item being played) still works.
-        let resolved = StreamService::lookup(ctx, owner.id, Some(owner.id), None, None, None)
-            .await
-            .unwrap();
+        let resolved =
+            StreamService::lookup(ctx, owner.id, Some(owner.id), None, None, None)
+                .await
+                .unwrap();
         assert_eq!(resolved.id, stream.id);
 
         // A real stream id is still honoured.

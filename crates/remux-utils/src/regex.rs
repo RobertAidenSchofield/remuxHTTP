@@ -2,13 +2,17 @@ use regex::{Regex, RegexBuilder};
 
 /// Pre-validates whether a regex pattern string is syntactically valid.
 pub fn validate_regex_pattern(pattern: &str) -> Result<(), regex::Error> {
-    RegexBuilder::new(pattern).build().map(|_| ())
+    RegexBuilder::new(pattern)
+        .build()
+        .map(|_| ())
 }
 
 /// Safely compiles a single regex pattern using `RegexBuilder`.
 /// Returns `Some(Regex)` if valid, or `None` if invalid.
 pub fn compile_safe_regex(pattern: &str) -> Option<Regex> {
-    RegexBuilder::new(pattern).build().ok()
+    RegexBuilder::new(pattern)
+        .build()
+        .ok()
 }
 
 /// Safely compiles a list of pattern strings, ignoring invalid syntax.
@@ -67,4 +71,3 @@ mod tests {
         assert!(compiled[1].is_match("valid_two"));
     }
 }
-

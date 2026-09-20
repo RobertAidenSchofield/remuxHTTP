@@ -242,7 +242,10 @@ async fn items_playbackinfo_inner(
                 .user
                 .id,
         ),
-        client_ip: session.device.remote_ip.clone(),
+        client_ip: session
+            .device
+            .remote_ip
+            .clone(),
     });
     let is_live = media.is_live();
     let is_track_item = media.is_track();
@@ -947,13 +950,22 @@ async fn videos_stream_inner(
     let requested_id = probe_fallback.or(q.media_source_id);
     let client_ip = headers
         .get("X-Forwarded-For")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
+        .and_then(|v| {
+            v.to_str()
+                .ok()
+        })
+        .and_then(|v| {
+            v.split(',')
+                .next()
+        })
         .map(str::trim)
         .or_else(|| {
             headers
                 .get("X-Real-IP")
-                .and_then(|v| v.to_str().ok())
+                .and_then(|v| {
+                    v.to_str()
+                        .ok()
+                })
                 .map(str::trim)
         });
     let media = StreamService::lookup(
@@ -1348,7 +1360,10 @@ pub async fn audio_universal(
                     .user
                     .id,
             ),
-            session.device.remote_ip.as_deref(),
+            session
+                .device
+                .remote_ip
+                .as_deref(),
         )
         .await
         .inspect_err(|e| error!("refresh_streams failed: {e:#}"));
@@ -1683,7 +1698,10 @@ mod tests {
             updated_at: now,
             ..Default::default()
         };
-        media.save(&ctx.db).await.unwrap();
+        media
+            .save(&ctx.db)
+            .await
+            .unwrap();
 
         let resp = server
             .post(&format!("/items/{}/playbackinfo", media.id))
@@ -1699,11 +1717,20 @@ mod tests {
 
         resp.assert_status_ok();
         let body: crate::api::PlaybackInfoResponse = resp.json();
-        assert!(!body.media_sources.is_empty());
+        assert!(
+            !body
+                .media_sources
+                .is_empty()
+        );
         let source = &body.media_sources[0];
         assert_eq!(source.protocol, crate::api::MediaProtocol::Http);
         assert!(source.is_remote);
-        assert_eq!(source.path.as_deref(), Some(stream_url));
+        assert_eq!(
+            source
+                .path
+                .as_deref(),
+            Some(stream_url)
+        );
     }
 
     /// A stream URL whose host is only reachable from remux's own network

@@ -10,4 +10,5 @@ services:
     environment:
       - PORT=3000
       - DATA_DIR=/data
+      # - SIMKL_CLIENT_ID=your_simkl_client_id_here
 

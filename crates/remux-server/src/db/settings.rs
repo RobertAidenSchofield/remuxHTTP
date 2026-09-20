@@ -72,14 +72,18 @@ impl Settings {
         let mut cfg = base_config.clone();
         if let Some(json) = Self::get(db, SIMKL_CONFIG_KEY).await? {
             if let Ok(db_cfg) = serde_json::from_str::<crate::SimklConfig>(&json) {
-                if !db_cfg.client_id.is_empty() {
+                if !db_cfg
+                    .client_id
+                    .is_empty()
+                {
                     cfg.client_id = db_cfg.client_id;
                 }
                 if db_cfg.completion_threshold > 0 {
                     cfg.completion_threshold = db_cfg.completion_threshold;
                 }
                 for (uid, user_cfg) in db_cfg.users {
-                    cfg.users.insert(uid, user_cfg);
+                    cfg.users
+                        .insert(uid, user_cfg);
                 }
             }
         }
@@ -101,11 +105,17 @@ impl Settings {
     ) -> Result<crate::SimklUserConfig> {
         let full_cfg = Self::get_simkl_config(db, base_config).await?;
         let key = user_id.to_string();
-        let simple_key = user_id.simple().to_string();
+        let simple_key = user_id
+            .simple()
+            .to_string();
         Ok(full_cfg
             .users
             .get(&key)
-            .or_else(|| full_cfg.users.get(&simple_key))
+            .or_else(|| {
+                full_cfg
+                    .users
+                    .get(&simple_key)
+            })
             .cloned()
             .unwrap_or_default())
     }
@@ -118,7 +128,9 @@ impl Settings {
     ) -> Result<()> {
         let mut full_cfg = Self::get_simkl_config(db, base_config).await?;
         let key = user_id.to_string();
-        full_cfg.users.insert(key, user_config);
+        full_cfg
+            .users
+            .insert(key, user_config);
         Self::set_simkl_config(db, &full_cfg).await
     }
 

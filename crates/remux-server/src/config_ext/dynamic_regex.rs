@@ -48,7 +48,10 @@ impl RemoteRegexPayload {
     /// Extracts all pattern strings from the payload.
     pub fn into_patterns(self) -> Vec<String> {
         match self {
-            Self::Rules { rules } => rules.into_iter().map(|r| r.pattern).collect(),
+            Self::Rules { rules } => rules
+                .into_iter()
+                .map(|r| r.pattern)
+                .collect(),
             Self::Patterns { patterns } => patterns,
             Self::List(patterns) => patterns,
         }
@@ -80,4 +83,3 @@ mod tests {
         assert_eq!(payload.into_patterns(), vec!["pattern1", "pattern2"]);
     }
 }
-

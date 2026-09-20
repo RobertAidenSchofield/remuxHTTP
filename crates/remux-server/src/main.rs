@@ -74,7 +74,35 @@ async fn main() -> Result<()> {
             .as_deref(),
     );
 
-    serve(config.resolve(), load_paths()).await
+    let resolved_config = config.resolve();
+    if !resolved_config
+        .simkl
+        .client_id
+        .is_empty()
+    {
+        let mask = if resolved_config
+            .simkl
+            .client_id
+            .len()
+            > 4
+        {
+            format!(
+                "{}...",
+                &resolved_config
+                    .simkl
+                    .client_id[..4]
+            )
+        } else {
+            "***".to_string()
+        };
+        tracing::info!(client_id = %mask, "[Simkl] Client ID loaded from environment/configuration");
+    } else {
+        tracing::info!(
+            "[Simkl] No Client ID configured in environment or settings. Simkl scrobbling can be enabled in Dashboard Settings > Simkl or via SIMKL_CLIENT_ID."
+        );
+    }
+
+    serve(resolved_config, load_paths()).await
 }
 
 #[cfg(test)]
@@ -120,6 +148,44 @@ mod tests {
         assert_eq!(
             config.host,
             std::net::IpAddr::from(std::net::Ipv4Addr::UNSPECIFIED)
+        );
+    }
+
+    #[test]
+    fn parses_simkl_client_id_from_double_underscore_env() {
+        let env = config::Environment::default()
+            .separator("__")
+            .source(Some({
+                let mut env = config::Map::new();
+                env.insert("SIMKL__CLIENT_ID".into(), "my_simkl_id_123".into());
+                env
+            }));
+
+        let config = load_config(env)
+            .unwrap()
+            .resolve();
+        assert_eq!(
+            config
+                .simkl
+                .client_id,
+            "my_simkl_id_123"
+        );
+    }
+
+    #[test]
+    fn resolves_simkl_client_id_from_single_underscore_env_fallback() {
+        unsafe { std::env::set_var("SIMKL_CLIENT_ID", "simkl_env_fallback_456") };
+        let env = config::Environment::default().source(Some(config::Map::new()));
+        let config = load_config(env)
+            .unwrap()
+            .resolve();
+        unsafe { std::env::remove_var("SIMKL_CLIENT_ID") };
+
+        assert_eq!(
+            config
+                .simkl
+                .client_id,
+            "simkl_env_fallback_456"
         );
     }
 }

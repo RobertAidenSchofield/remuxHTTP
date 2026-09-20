@@ -7,12 +7,17 @@ use chrono::Datelike;
 use remux_sdks::remux::SimklPollResultDto;
 use remux_sdks::simkl::{
     ScrobblePayload, SimklDeviceCodeResponse, SimklEpisode, SimklIds, SimklMovie,
-    SimklPlaybackItem, SimklShow, SimklTokenErrorResponse, SimklTokenResponse, SimklUserSettings,
+    SimklPlaybackItem, SimklShow, SimklTokenErrorResponse, SimklTokenResponse,
+    SimklUserSettings,
 };
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{AppContext, common::{TickUnit, ToRunTimeTicks}, db};
+use crate::{
+    AppContext,
+    common::{TickUnit, ToRunTimeTicks},
+    db,
+};
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
@@ -31,7 +36,6 @@ const PLAYBACK_SYNC_COOLDOWN: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct PendingDeviceAuth {
-    pub device_code: String,
     pub user_code: String,
     pub verification_uri: String,
     pub verification_uri_complete: Option<String>,
@@ -97,7 +101,10 @@ impl SimklService {
     ///
     /// - Movies: Require `imdb` or `tmdb`.
     /// - Episodes: Require series `imdb`, `tvdb`, or `tmdb`, plus episode `season` and `number`.
-    pub async fn resolve_media(ctx: &AppContext, item_id: &Uuid) -> Result<Option<ResolvedMedia>> {
+    pub async fn resolve_media(
+        ctx: &AppContext,
+        item_id: &Uuid,
+    ) -> Result<Option<ResolvedMedia>> {
         let Some(media) = db::Media::get_by_id(&ctx.db, item_id).await? else {
             return Ok(None);
         };
@@ -123,7 +130,11 @@ impl SimklService {
                 }
 
                 let movie = SimklMovie {
-                    title: Some(media.title.clone()),
+                    title: Some(
+                        media
+                            .title
+                            .clone(),
+                    ),
                     year: media
                         .released_at
                         .map(|d| d.year()),
@@ -202,7 +213,11 @@ impl SimklService {
                 }
 
                 let show = SimklShow {
-                    title: Some(series.title.clone()),
+                    title: Some(
+                        series
+                            .title
+                            .clone(),
+                    ),
                     year: series
                         .released_at
                         .map(|d| d.year()),
@@ -242,8 +257,14 @@ impl SimklService {
         run_time_ticks: Option<i64>,
     ) {
         tokio::spawn(async move {
-            if let Err(e) =
-                Self::handle_start(&ctx, user_id, item_id, position_ticks, run_time_ticks).await
+            if let Err(e) = Self::handle_start(
+                &ctx,
+                user_id,
+                item_id,
+                position_ticks,
+                run_time_ticks,
+            )
+            .await
             {
                 warn!("[Simkl] Scrobble error on start: {e}");
             }
@@ -259,8 +280,14 @@ impl SimklService {
         run_time_ticks: Option<i64>,
     ) {
         tokio::spawn(async move {
-            if let Err(e) =
-                Self::handle_pause(&ctx, user_id, item_id, position_ticks, run_time_ticks).await
+            if let Err(e) = Self::handle_pause(
+                &ctx,
+                user_id,
+                item_id,
+                position_ticks,
+                run_time_ticks,
+            )
+            .await
             {
                 warn!("[Simkl] Scrobble error on pause: {e}");
             }
@@ -277,9 +304,15 @@ impl SimklService {
         played: bool,
     ) {
         tokio::spawn(async move {
-            if let Err(e) =
-                Self::handle_stop(&ctx, user_id, item_id, position_ticks, run_time_ticks, played)
-                    .await
+            if let Err(e) = Self::handle_stop(
+                &ctx,
+                user_id,
+                item_id,
+                position_ticks,
+                run_time_ticks,
+                played,
+            )
+            .await
             {
                 warn!("[Simkl] Scrobble error on stop: {e}");
             }
@@ -294,7 +327,19 @@ impl SimklService {
         run_time_ticks: Option<i64>,
     ) -> Result<()> {
         let (client_id, user_cfg) = Self::get_credentials(ctx, &user_id).await?;
-        if client_id.is_empty() || !user_cfg.enabled || user_cfg.user_token.is_empty() {
+        if client_id.is_empty() {
+            debug!(%user_id, "[Simkl] Scrobble start skipped: Simkl Client ID is not configured");
+            return Ok(());
+        }
+        if !user_cfg.enabled {
+            debug!(%user_id, "[Simkl] Scrobble start skipped: Simkl scrobbling disabled for user");
+            return Ok(());
+        }
+        if user_cfg
+            .user_token
+            .is_empty()
+        {
+            debug!(%user_id, "[Simkl] Scrobble start skipped: no user access token");
             return Ok(());
         }
 
@@ -314,7 +359,8 @@ impl SimklService {
         let progress = Self::calculate_progress(pos, runtime);
 
         let payload = resolved.to_payload(progress);
-        Self::send_scrobble_request("start", &payload, &client_id, &user_cfg.user_token).await
+        Self::send_scrobble_request("start", &payload, &client_id, &user_cfg.user_token)
+            .await
     }
 
     async fn handle_pause(
@@ -325,7 +371,19 @@ impl SimklService {
         run_time_ticks: Option<i64>,
     ) -> Result<()> {
         let (client_id, user_cfg) = Self::get_credentials(ctx, &user_id).await?;
-        if client_id.is_empty() || !user_cfg.enabled || user_cfg.user_token.is_empty() {
+        if client_id.is_empty() {
+            debug!(%user_id, "[Simkl] Scrobble pause skipped: Simkl Client ID is not configured");
+            return Ok(());
+        }
+        if !user_cfg.enabled {
+            debug!(%user_id, "[Simkl] Scrobble pause skipped: Simkl scrobbling disabled for user");
+            return Ok(());
+        }
+        if user_cfg
+            .user_token
+            .is_empty()
+        {
+            debug!(%user_id, "[Simkl] Scrobble pause skipped: no user access token");
             return Ok(());
         }
 
@@ -345,7 +403,8 @@ impl SimklService {
         let progress = Self::calculate_progress(pos, runtime);
 
         let payload = resolved.to_payload(progress);
-        Self::send_scrobble_request("pause", &payload, &client_id, &user_cfg.user_token).await
+        Self::send_scrobble_request("pause", &payload, &client_id, &user_cfg.user_token)
+            .await
     }
 
     async fn handle_stop(
@@ -357,7 +416,19 @@ impl SimklService {
         played: bool,
     ) -> Result<()> {
         let (client_id, user_cfg) = Self::get_credentials(ctx, &user_id).await?;
-        if client_id.is_empty() || !user_cfg.enabled || user_cfg.user_token.is_empty() {
+        if client_id.is_empty() {
+            debug!(%user_id, "[Simkl] Scrobble stop skipped: Simkl Client ID is not configured");
+            return Ok(());
+        }
+        if !user_cfg.enabled {
+            debug!(%user_id, "[Simkl] Scrobble stop skipped: Simkl scrobbling disabled for user");
+            return Ok(());
+        }
+        if user_cfg
+            .user_token
+            .is_empty()
+        {
+            debug!(%user_id, "[Simkl] Scrobble stop skipped: no user access token");
             return Ok(());
         }
 
@@ -376,7 +447,12 @@ impl SimklService {
         let pos = position_ticks.unwrap_or(0);
         let mut progress = Self::calculate_progress(pos, runtime);
 
-        let simkl_cfg = db::Settings::get_simkl_config(&ctx.db, &ctx.config.simkl).await?;
+        let simkl_cfg = db::Settings::get_simkl_config(
+            &ctx.db,
+            &ctx.config
+                .simkl,
+        )
+        .await?;
         let threshold = simkl_cfg
             .completion_threshold
             .max(1) as f64;
@@ -387,16 +463,27 @@ impl SimklService {
         }
 
         let payload = resolved.to_payload(progress);
-        Self::send_scrobble_request("stop", &payload, &client_id, &user_cfg.user_token).await
+        Self::send_scrobble_request("stop", &payload, &client_id, &user_cfg.user_token)
+            .await
     }
 
     async fn get_credentials(
         ctx: &AppContext,
         user_id: &Uuid,
     ) -> Result<(String, crate::SimklUserConfig)> {
-        let simkl_cfg = db::Settings::get_simkl_config(&ctx.db, &ctx.config.simkl).await?;
-        let user_cfg =
-            db::Settings::get_user_simkl_config(&ctx.db, &ctx.config.simkl, user_id).await?;
+        let simkl_cfg = db::Settings::get_simkl_config(
+            &ctx.db,
+            &ctx.config
+                .simkl,
+        )
+        .await?;
+        let user_cfg = db::Settings::get_user_simkl_config(
+            &ctx.db,
+            &ctx.config
+                .simkl,
+            user_id,
+        )
+        .await?;
         Ok((simkl_cfg.client_id, user_cfg))
     }
 
@@ -406,7 +493,16 @@ impl SimklService {
         client_id: &str,
         user_token: &str,
     ) -> Result<()> {
-        let url = format!("{SIMKL_API_BASE}/scrobble/{action}?client_id={client_id}&app-name=remux&app-version=1.0");
+        let url = format!(
+            "{SIMKL_API_BASE}/scrobble/{action}?client_id={client_id}&app-name=remux&app-version=1.0"
+        );
+        info!(
+            action,
+            client_id_prefix = &client_id[..client_id
+                .len()
+                .min(4)],
+            "[Simkl] Sending scrobble request"
+        );
         let resp = HTTP_CLIENT
             .post(&url)
             .header("simkl-api-key", client_id)
@@ -421,20 +517,33 @@ impl SimklService {
         let status = resp.status();
         // 200/201 is success, 409 is soft-success (already scrobbled recently)
         if status.is_success() || status.as_u16() == 409 {
-            info!(action, status = status.as_u16(), "[Simkl] Scrobble successful");
+            info!(
+                action,
+                status = status.as_u16(),
+                "[Simkl] Scrobble successful"
+            );
             Ok(())
         } else {
             let body = resp
                 .text()
                 .await
                 .unwrap_or_default();
+            warn!(action, status = status.as_u16(), body = %body, "[Simkl] Scrobble failed");
             anyhow::bail!("Simkl scrobble {action} returned HTTP {status}: {body}");
         }
     }
 
     /// Test connection with Simkl API using `GET https://api.simkl.com/users/settings`.
     pub async fn test_connection(client_id: &str, user_token: &str) -> Result<String> {
-        let url = format!("{SIMKL_API_BASE}/users/settings?client_id={client_id}&app-name=remux&app-version=1.0");
+        let url = format!(
+            "{SIMKL_API_BASE}/users/settings?client_id={client_id}&app-name=remux&app-version=1.0"
+        );
+        info!(
+            client_id_prefix = &client_id[..client_id
+                .len()
+                .min(4)],
+            "[Simkl] Testing connection to Simkl API"
+        );
         let resp = HTTP_CLIENT
             .get(&url)
             .header("simkl-api-key", client_id)
@@ -455,90 +564,143 @@ impl SimklService {
                 .user
                 .and_then(|u| u.name)
                 .unwrap_or_else(|| "User".to_string());
+            info!(username = %username, "[Simkl] Connection test successful");
             Ok(format!("Connected successfully as {username}"))
         } else if status.as_u16() == 401 {
+            warn!(
+                "[Simkl] Connection test failed: Unauthorized (invalid access token)"
+            );
             anyhow::bail!("Unauthorized: Invalid Simkl access token")
         } else {
             let body = resp
                 .text()
                 .await
                 .unwrap_or_default();
+            warn!(status = status.as_u16(), body = %body, "[Simkl] Connection test failed with error status");
             anyhow::bail!("Simkl API returned HTTP {status}: {body}")
         }
     }
 
-    /// Request a new OAuth2 device code for a user from Simkl API.
+    /// Request a new device PIN for a user from Simkl API via `GET /oauth/pin`.
     pub async fn start_device_auth(
         client_id: &str,
         user_id: Uuid,
     ) -> Result<SimklDeviceCodeResponse> {
-        let url = format!("{SIMKL_API_BASE}/oauth2/device");
-        let params = [
-            ("client_id", client_id),
-            ("scope", "media:read media:write"),
-        ];
+        let url = format!(
+            "{SIMKL_API_BASE}/oauth/pin?client_id={client_id}&app-name=remux&app-version=1.0"
+        );
+        info!(
+            %user_id,
+            client_id_prefix = &client_id[..client_id.len().min(4)],
+            "[Simkl] Requesting device PIN from Simkl"
+        );
 
         let resp = HTTP_CLIENT
-            .post(&url)
-            .form(&params)
+            .get(&url)
+            .header("simkl-api-key", client_id)
             .header("Accept", "application/json")
             .send()
             .await
-            .context("Failed to request device code from Simkl")?;
+            .context("Failed to request device PIN from Simkl")?;
 
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_default();
+            warn!(status = status.as_u16(), body = %body, "[Simkl] Device PIN request failed");
             anyhow::bail!("Simkl device authorization failed ({status}): {body}");
         }
 
-        let device_resp: SimklDeviceCodeResponse = resp
+        let mut device_resp: SimklDeviceCodeResponse = resp
             .json()
             .await
             .context("Failed to parse Simkl device code response")?;
 
-        let expires_at = Instant::now() + Duration::from_secs(device_resp.expires_in.max(30));
-        let interval = Duration::from_secs(device_resp.interval.max(5));
+        if device_resp
+            .verification_uri
+            .is_empty()
+        {
+            device_resp.verification_uri = "https://simkl.com/pin".to_string();
+        }
 
-        PENDING_DEVICE_AUTHS.lock().unwrap().insert(
-            user_id,
-            PendingDeviceAuth {
-                device_code: device_resp.device_code.clone(),
-                user_code: device_resp.user_code.clone(),
-                verification_uri: device_resp.verification_uri.clone(),
-                verification_uri_complete: device_resp.verification_uri_complete.clone(),
-                expires_at,
-                interval,
-                last_polled_at: None,
-            },
+        let expires_at = Instant::now()
+            + Duration::from_secs(
+                device_resp
+                    .expires_in
+                    .max(30),
+            );
+        let interval = Duration::from_secs(
+            device_resp
+                .interval
+                .max(5),
         );
 
+        PENDING_DEVICE_AUTHS
+            .lock()
+            .unwrap()
+            .insert(
+                user_id,
+                PendingDeviceAuth {
+                    user_code: device_resp
+                        .user_code
+                        .clone(),
+                    verification_uri: device_resp
+                        .verification_uri
+                        .clone(),
+                    verification_uri_complete: device_resp
+                        .verification_uri_complete
+                        .clone(),
+                    expires_at,
+                    interval,
+                    last_polled_at: None,
+                },
+            );
+
+        info!(
+            %user_id,
+            user_code = %device_resp.user_code,
+            verification_uri = %device_resp.verification_uri,
+            "[Simkl] Device PIN generated successfully"
+        );
         Ok(device_resp)
     }
 
-    /// Poll for token approval from Simkl API.
+    /// Poll for token approval from Simkl API via `GET /oauth/pin/{user_code}`.
     pub async fn poll_device_auth(
         ctx: &AppContext,
         client_id: &str,
         user_id: Uuid,
     ) -> Result<SimklPollResultDto> {
         let pending = {
-            let auths = PENDING_DEVICE_AUTHS.lock().unwrap();
-            auths.get(&user_id).cloned()
+            let auths = PENDING_DEVICE_AUTHS
+                .lock()
+                .unwrap();
+            auths
+                .get(&user_id)
+                .cloned()
         };
 
         let Some(mut pending) = pending else {
             return Ok(SimklPollResultDto {
                 status: "expired".to_string(),
-                message: Some("No active login session found. Please start again.".to_string()),
+                message: Some(
+                    "No active login session found. Please start again.".to_string(),
+                ),
             });
         };
 
         if Instant::now() >= pending.expires_at {
-            PENDING_DEVICE_AUTHS.lock().unwrap().remove(&user_id);
+            PENDING_DEVICE_AUTHS
+                .lock()
+                .unwrap()
+                .remove(&user_id);
             return Ok(SimklPollResultDto {
                 status: "expired".to_string(),
-                message: Some("Authorization code expired. Please start again.".to_string()),
+                message: Some(
+                    "Authorization code expired. Please start again.".to_string(),
+                ),
             });
         }
 
@@ -552,80 +714,138 @@ impl SimklService {
         }
 
         pending.last_polled_at = Some(Instant::now());
-        if let Some(p) = PENDING_DEVICE_AUTHS.lock().unwrap().get_mut(&user_id) {
+        if let Some(p) = PENDING_DEVICE_AUTHS
+            .lock()
+            .unwrap()
+            .get_mut(&user_id)
+        {
             p.last_polled_at = pending.last_polled_at;
         }
 
-        let url = format!("{SIMKL_API_BASE}/oauth2/token");
-        let params = [
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("client_id", client_id),
-            ("device_code", &pending.device_code),
-        ];
+        let url = format!(
+            "{SIMKL_API_BASE}/oauth/pin/{}?client_id={client_id}&app-name=remux&app-version=1.0",
+            pending.user_code
+        );
 
         let resp = HTTP_CLIENT
-            .post(&url)
-            .form(&params)
+            .get(&url)
+            .header("simkl-api-key", client_id)
             .header("Accept", "application/json")
             .send()
             .await
-            .context("Failed to poll Simkl token endpoint")?;
+            .context("Failed to poll Simkl PIN endpoint")?;
 
         let status = resp.status();
         if status.is_success() {
-            let token_resp: SimklTokenResponse = resp
+            let poll_resp: remux_sdks::simkl::SimklPinPollResponse = resp
                 .json()
                 .await
-                .context("Failed to parse Simkl token response")?;
+                .context("Failed to parse Simkl PIN poll response")?;
 
-            // Save to DB
-            let mut user_cfg = db::Settings::get_user_simkl_config(&ctx.db, &ctx.config.simkl, &user_id)
-                .await
-                .unwrap_or_default();
-            user_cfg.enabled = true;
-            user_cfg.user_token = token_resp.access_token;
-            db::Settings::set_user_simkl_config(&ctx.db, &ctx.config.simkl, &user_id, user_cfg).await?;
+            if poll_resp
+                .result
+                .eq_ignore_ascii_case("OK")
+            {
+                if let Some(token) = poll_resp
+                    .access_token
+                    .filter(|t| !t.is_empty())
+                {
+                    let mut user_cfg = db::Settings::get_user_simkl_config(
+                        &ctx.db,
+                        &ctx.config
+                            .simkl,
+                        &user_id,
+                    )
+                    .await
+                    .unwrap_or_default();
+                    user_cfg.enabled = true;
+                    user_cfg.user_token = token;
+                    db::Settings::set_user_simkl_config(
+                        &ctx.db,
+                        &ctx.config
+                            .simkl,
+                        &user_id,
+                        user_cfg,
+                    )
+                    .await?;
 
-            PENDING_DEVICE_AUTHS.lock().unwrap().remove(&user_id);
-            Ok(SimklPollResultDto {
-                status: "success".to_string(),
-                message: Some("Connected successfully to Simkl!".to_string()),
-            })
-        } else if status.as_u16() == 400 {
-            let err_resp: SimklTokenErrorResponse = resp.json().await.unwrap_or_default();
-            match err_resp.error.as_str() {
-                "authorization_pending" => Ok(SimklPollResultDto {
-                    status: "pending".to_string(),
-                    message: None,
-                }),
-                "slow_down" => {
-                    if let Some(p) = PENDING_DEVICE_AUTHS.lock().unwrap().get_mut(&user_id) {
-                        p.interval += Duration::from_secs(5);
-                    }
-                    Ok(SimklPollResultDto {
-                        status: "pending".to_string(),
-                        message: None,
-                    })
-                }
-                "expired_token" => {
-                    PENDING_DEVICE_AUTHS.lock().unwrap().remove(&user_id);
-                    Ok(SimklPollResultDto {
-                        status: "expired".to_string(),
-                        message: Some("Authorization code expired. Please start again.".to_string()),
-                    })
-                }
-                other => {
-                    let msg = err_resp.error_description.unwrap_or_else(|| other.to_string());
-                    PENDING_DEVICE_AUTHS.lock().unwrap().remove(&user_id);
-                    Ok(SimklPollResultDto {
-                        status: "error".to_string(),
-                        message: Some(msg),
-                    })
+                    PENDING_DEVICE_AUTHS
+                        .lock()
+                        .unwrap()
+                        .remove(&user_id);
+                    info!(%user_id, "[Simkl] PIN authorization approved by user");
+                    return Ok(SimklPollResultDto {
+                        status: "success".to_string(),
+                        message: Some("Connected successfully to Simkl!".to_string()),
+                    });
                 }
             }
+
+            let msg = poll_resp
+                .message
+                .unwrap_or_default();
+            if msg
+                .to_lowercase()
+                .contains("pending")
+            {
+                return Ok(SimklPollResultDto {
+                    status: "pending".to_string(),
+                    message: None,
+                });
+            } else if msg
+                .to_lowercase()
+                .contains("slow")
+            {
+                if let Some(p) = PENDING_DEVICE_AUTHS
+                    .lock()
+                    .unwrap()
+                    .get_mut(&user_id)
+                {
+                    p.interval += Duration::from_secs(5);
+                }
+                return Ok(SimklPollResultDto {
+                    status: "pending".to_string(),
+                    message: None,
+                });
+            } else {
+                PENDING_DEVICE_AUTHS
+                    .lock()
+                    .unwrap()
+                    .remove(&user_id);
+                warn!(%user_id, message = %msg, "[Simkl] PIN authorization ended with non-pending status");
+                return Ok(SimklPollResultDto {
+                    status: "expired".to_string(),
+                    message: Some(if msg.is_empty() {
+                        "Authorization code expired or invalid.".to_string()
+                    } else {
+                        msg
+                    }),
+                });
+            }
+        } else if status.as_u16() == 400 || status.as_u16() == 404 {
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_default();
+            PENDING_DEVICE_AUTHS
+                .lock()
+                .unwrap()
+                .remove(&user_id);
+            warn!(%user_id, status = status.as_u16(), body = %body, "[Simkl] PIN polling returned client error");
+            Ok(SimklPollResultDto {
+                status: "expired".to_string(),
+                message: Some(format!("Simkl authorization error ({status}): {body}")),
+            })
         } else {
-            let body = resp.text().await.unwrap_or_default();
-            PENDING_DEVICE_AUTHS.lock().unwrap().remove(&user_id);
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_default();
+            PENDING_DEVICE_AUTHS
+                .lock()
+                .unwrap()
+                .remove(&user_id);
+            warn!(%user_id, status = status.as_u16(), body = %body, "[Simkl] PIN polling returned server error");
             Ok(SimklPollResultDto {
                 status: "error".to_string(),
                 message: Some(format!("Simkl API error ({status}): {body}")),
@@ -638,7 +858,15 @@ impl SimklService {
         client_id: &str,
         user_token: &str,
     ) -> Result<Vec<SimklPlaybackItem>> {
-        let url = format!("{SIMKL_API_BASE}/sync/playback?hide_watched=true&client_id={client_id}&app-name=remux&app-version=1.0");
+        let url = format!(
+            "{SIMKL_API_BASE}/sync/playback?hide_watched=true&client_id={client_id}&app-name=remux&app-version=1.0"
+        );
+        info!(
+            client_id_prefix = &client_id[..client_id
+                .len()
+                .min(4)],
+            "[Simkl] Fetching playback from Simkl"
+        );
         let resp = HTTP_CLIENT
             .get(&url)
             .header("simkl-api-key", client_id)
@@ -656,28 +884,46 @@ impl SimklService {
                 .context("failed to parse Simkl playback items")?;
             Ok(items)
         } else {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_default();
             anyhow::bail!("Simkl GET /sync/playback returned HTTP {status}: {body}");
         }
     }
 
     /// Pull paused/in-progress playback sessions from Simkl and sync them to Remux's local user media state.
     pub async fn sync_playback(ctx: &AppContext, user_id: Uuid) -> Result<()> {
-        let Ok((client_id, user_cfg)) = Self::get_credentials(ctx, &user_id).await else {
+        let Ok((client_id, user_cfg)) = Self::get_credentials(ctx, &user_id).await
+        else {
             return Ok(());
         };
 
-        if client_id.is_empty()
-            || !user_cfg.enabled
-            || !user_cfg.sync_continue_watching
-            || user_cfg.user_token.is_empty()
+        if client_id.is_empty() {
+            debug!(%user_id, "[Simkl] Continue Watching sync skipped: Simkl Client ID is not configured");
+            return Ok(());
+        }
+        if !user_cfg.enabled {
+            debug!(%user_id, "[Simkl] Continue Watching sync skipped: Simkl scrobbling disabled for user");
+            return Ok(());
+        }
+        if !user_cfg.sync_continue_watching {
+            debug!(%user_id, "[Simkl] Continue Watching sync skipped: continue watching sync disabled for user");
+            return Ok(());
+        }
+        if user_cfg
+            .user_token
+            .is_empty()
         {
+            debug!(%user_id, "[Simkl] Continue Watching sync skipped: no user access token");
             return Ok(());
         }
 
         // Check rate-limit cooldown
         {
-            let mut sync_times = LAST_PLAYBACK_SYNC.lock().unwrap();
+            let mut sync_times = LAST_PLAYBACK_SYNC
+                .lock()
+                .unwrap();
             if let Some(last) = sync_times.get(&user_id) {
                 if last.elapsed() < PLAYBACK_SYNC_COOLDOWN {
                     return Ok(());
@@ -718,8 +964,16 @@ impl SimklService {
         user: &db::User,
         item: &SimklPlaybackItem,
     ) -> Result<()> {
-        let is_movie = item.item_type.as_deref() == Some("movie")
-            || (item.movie.is_some() && item.episode.is_none());
+        let is_movie = item
+            .item_type
+            .as_deref()
+            == Some("movie")
+            || (item
+                .movie
+                .is_some()
+                && item
+                    .episode
+                    .is_none());
 
         let media = if is_movie {
             let movie = match &item.movie {
@@ -728,7 +982,13 @@ impl SimklService {
             };
             Self::find_or_resolve_movie(ctx, movie).await?
         } else {
-            let show = match item.show.as_ref().or(item.anime.as_ref()) {
+            let show = match item
+                .show
+                .as_ref()
+                .or(item
+                    .anime
+                    .as_ref())
+            {
                 Some(s) => s,
                 None => anyhow::bail!("missing show object in playback item"),
             };
@@ -763,19 +1023,29 @@ impl SimklService {
             .and_then(|runtime| runtime.to_ticks(TickUnit::Seconds))
             .unwrap_or_else(|| {
                 if media.kind == db::MediaKind::Movie {
-                    120_i64.to_ticks(TickUnit::Minutes).unwrap()
+                    120_i64
+                        .to_ticks(TickUnit::Minutes)
+                        .unwrap()
                 } else {
-                    45_i64.to_ticks(TickUnit::Minutes).unwrap()
+                    45_i64
+                        .to_ticks(TickUnit::Minutes)
+                        .unwrap()
                 }
             });
 
-        let target_ticks = ((item.progress.clamp(0.0, 100.0) / 100.0) * runtime_ticks as f64) as i64;
+        let target_ticks = ((item
+            .progress
+            .clamp(0.0, 100.0)
+            / 100.0)
+            * runtime_ticks as f64) as i64;
 
         state.playback_position = target_ticks;
         state.last_played_at = Some(paused_at);
         state.played_at = None;
 
-        state.save(&ctx.db).await?;
+        state
+            .save(&ctx.db)
+            .await?;
         debug!(
             %media.id,
             title = %media.title,
@@ -792,18 +1062,31 @@ impl SimklService {
         movie: &SimklMovie,
     ) -> Result<Option<db::Media>> {
         let mut ext = db::ExternalIds::default();
-        if let Some(imdb) = &movie.ids.imdb {
+        if let Some(imdb) = &movie
+            .ids
+            .imdb
+        {
             ext.imdb = db::NonEmptyString::try_new(imdb.clone()).ok();
         }
-        if let Some(tmdb) = &movie.ids.tmdb {
-            ext.tmdb = tmdb.parse::<i64>().ok();
+        if let Some(tmdb) = &movie
+            .ids
+            .tmdb
+        {
+            ext.tmdb = tmdb
+                .parse::<i64>()
+                .ok();
         }
 
-        if let Some(id) = db::Media::find_by_external_ids(&ctx.db, &db::MediaKind::Movie, &ext).await {
+        if let Some(id) =
+            db::Media::find_by_external_ids(&ctx.db, &db::MediaKind::Movie, &ext).await
+        {
             return Ok(db::Media::get_by_id(&ctx.db, &id).await?);
         }
 
-        if let Some(imdb) = ext.imdb.as_ref() {
+        if let Some(imdb) = ext
+            .imdb
+            .as_ref()
+        {
             let custom_id = imdb.to_string();
             let raw = db::MediaIdRaw {
                 kind: db::MediaKind::Movie,
@@ -817,7 +1100,9 @@ impl SimklService {
                 episode: None,
             };
             let synth_id = Uuid::from(&raw);
-            if let Ok(Some(media)) = crate::services::MediaResolveService::resolve_item(synth_id, ctx).await {
+            if let Ok(Some(media)) =
+                crate::services::MediaResolveService::resolve_item(synth_id, ctx).await
+            {
                 return Ok(Some(media));
             }
         }
@@ -831,20 +1116,42 @@ impl SimklService {
         episode: &SimklEpisode,
     ) -> Result<Option<db::Media>> {
         let mut ext = db::ExternalIds::default();
-        if let Some(imdb) = &show.ids.imdb {
+        if let Some(imdb) = &show
+            .ids
+            .imdb
+        {
             ext.imdb = db::NonEmptyString::try_new(imdb.clone()).ok();
         }
-        if let Some(tmdb) = &show.ids.tmdb {
-            ext.tmdb = tmdb.parse::<i64>().ok();
+        if let Some(tmdb) = &show
+            .ids
+            .tmdb
+        {
+            ext.tmdb = tmdb
+                .parse::<i64>()
+                .ok();
         }
-        if let Some(tvdb) = &show.ids.tvdb {
-            ext.tvdb = tvdb.parse::<i64>().ok();
+        if let Some(tvdb) = &show
+            .ids
+            .tvdb
+        {
+            ext.tvdb = tvdb
+                .parse::<i64>()
+                .ok();
         }
 
-        let series_id = match db::Media::find_by_external_ids(&ctx.db, &db::MediaKind::Series, &ext).await {
+        let series_id = match db::Media::find_by_external_ids(
+            &ctx.db,
+            &db::MediaKind::Series,
+            &ext,
+        )
+        .await
+        {
             Some(id) => Some(id),
             None => {
-                if let Some(imdb) = ext.imdb.as_ref() {
+                if let Some(imdb) = ext
+                    .imdb
+                    .as_ref()
+                {
                     let custom_id = imdb.to_string();
                     let raw = db::MediaIdRaw {
                         kind: db::MediaKind::Series,
@@ -859,7 +1166,12 @@ impl SimklService {
                         episode: None,
                     };
                     let synth_id = Uuid::from(&raw);
-                    if let Ok(Some(s)) = crate::services::MediaResolveService::resolve_item(synth_id, ctx).await {
+                    if let Ok(Some(s)) =
+                        crate::services::MediaResolveService::resolve_item(
+                            synth_id, ctx,
+                        )
+                        .await
+                    {
                         Some(s.id)
                     } else {
                         None
@@ -915,7 +1227,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_sync_single_playback_item_updates_state() {
-        let (_s, guard) = crate::integration_test::new_test_server().await.unwrap();
+        let (_s, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
         let ctx = &guard.0;
         let user = db::User::get_by_username(&ctx.db, "test")
             .await
@@ -954,12 +1268,18 @@ mod tests {
 
         assert!(state.playback_position > 0);
         assert_eq!(state.played_at, None);
-        assert!(state.last_played_at.is_some());
+        assert!(
+            state
+                .last_played_at
+                .is_some()
+        );
     }
 
     #[tokio::test]
     async fn test_sync_single_playback_item_preserves_newer_local() {
-        let (_s, guard) = crate::integration_test::new_test_server().await.unwrap();
+        let (_s, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
         let ctx = &guard.0;
         let user = db::User::get_by_username(&ctx.db, "test")
             .await
@@ -977,7 +1297,10 @@ mod tests {
                 .unwrap()
                 .naive_utc(),
         );
-        local_state.save(&ctx.db).await.unwrap();
+        local_state
+            .save(&ctx.db)
+            .await
+            .unwrap();
 
         let item = SimklPlaybackItem {
             id: Some(123),

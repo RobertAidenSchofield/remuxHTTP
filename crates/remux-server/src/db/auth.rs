@@ -677,7 +677,10 @@ impl JellyfinAuthHeader {
         };
 
         if scheme.eq_ignore_ascii_case("Bearer") {
-            let token = rest.trim().trim_matches('"').to_string();
+            let token = rest
+                .trim()
+                .trim_matches('"')
+                .to_string();
             return Ok(Self {
                 token: if token.is_empty() { None } else { Some(token) },
                 ..Default::default()
@@ -958,28 +961,80 @@ mod tests {
     fn test_auth_header_schemes() {
         // MediaBrowser scheme
         let h1 = JellyfinAuthHeader::from_str("MediaBrowser Client=\"Jellyfin Web\", Device=\"Chrome\", DeviceId=\"abc\", Version=\"10.11.0\", Token=\"tok123\"").unwrap();
-        assert_eq!(h1.client.as_deref(), Some("Jellyfin Web"));
-        assert_eq!(h1.device.as_deref(), Some("Chrome"));
-        assert_eq!(h1.device_id.as_deref(), Some("abc"));
-        assert_eq!(h1.version.as_deref(), Some("10.11.0"));
-        assert_eq!(h1.token.as_deref(), Some("tok123"));
+        assert_eq!(
+            h1.client
+                .as_deref(),
+            Some("Jellyfin Web")
+        );
+        assert_eq!(
+            h1.device
+                .as_deref(),
+            Some("Chrome")
+        );
+        assert_eq!(
+            h1.device_id
+                .as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            h1.version
+                .as_deref(),
+            Some("10.11.0")
+        );
+        assert_eq!(
+            h1.token
+                .as_deref(),
+            Some("tok123")
+        );
 
         // Jellyfin scheme (Jellyfin 12 native)
         let h2 = JellyfinAuthHeader::from_str("Jellyfin Client=\"Jellyfin Web\", Device=\"Chrome\", DeviceId=\"def\", Version=\"12.1.0\", Token=\"tok456\"").unwrap();
-        assert_eq!(h2.client.as_deref(), Some("Jellyfin Web"));
-        assert_eq!(h2.device.as_deref(), Some("Chrome"));
-        assert_eq!(h2.device_id.as_deref(), Some("def"));
-        assert_eq!(h2.version.as_deref(), Some("12.1.0"));
-        assert_eq!(h2.token.as_deref(), Some("tok456"));
+        assert_eq!(
+            h2.client
+                .as_deref(),
+            Some("Jellyfin Web")
+        );
+        assert_eq!(
+            h2.device
+                .as_deref(),
+            Some("Chrome")
+        );
+        assert_eq!(
+            h2.device_id
+                .as_deref(),
+            Some("def")
+        );
+        assert_eq!(
+            h2.version
+                .as_deref(),
+            Some("12.1.0")
+        );
+        assert_eq!(
+            h2.token
+                .as_deref(),
+            Some("tok456")
+        );
 
         // Emby legacy scheme
         let h3 = JellyfinAuthHeader::from_str("Emby Client=\"Infuse\", Device=\"AppleTV\", DeviceId=\"ghi\", Version=\"7.0\", Token=\"tok789\"").unwrap();
-        assert_eq!(h3.client.as_deref(), Some("Infuse"));
-        assert_eq!(h3.token.as_deref(), Some("tok789"));
+        assert_eq!(
+            h3.client
+                .as_deref(),
+            Some("Infuse")
+        );
+        assert_eq!(
+            h3.token
+                .as_deref(),
+            Some("tok789")
+        );
 
         // Bearer token scheme
         let h4 = JellyfinAuthHeader::from_str("Bearer secret-token-xyz").unwrap();
-        assert_eq!(h4.token.as_deref(), Some("secret-token-xyz"));
+        assert_eq!(
+            h4.token
+                .as_deref(),
+            Some("secret-token-xyz")
+        );
         assert_eq!(h4.client, None);
 
         // Unknown scheme returns empty

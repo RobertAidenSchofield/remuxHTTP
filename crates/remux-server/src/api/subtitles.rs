@@ -438,7 +438,10 @@ async fn subtitles_stream_inner(
                     .user
                     .id,
             ),
-            session.device.remote_ip.as_deref(),
+            session
+                .device
+                .remote_ip
+                .as_deref(),
         )
         .await
         .ok();
@@ -537,7 +540,10 @@ async fn subtitles_stream_inner(
                 .user
                 .id,
         ),
-        session.device.remote_ip.as_deref(),
+        session
+            .device
+            .remote_ip
+            .as_deref(),
     )
     .await
     else {

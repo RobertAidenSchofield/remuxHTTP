@@ -236,7 +236,10 @@ fn is_forwardable_public_ip(ip_str: &str) -> bool {
     }
 }
 
-pub(crate) fn apply_client_ip_headers(map: &mut http::HeaderMap, client_ip: Option<&str>) {
+pub(crate) fn apply_client_ip_headers(
+    map: &mut http::HeaderMap,
+    client_ip: Option<&str>,
+) {
     if let Some(ip) = client_ip {
         if is_forwardable_public_ip(ip) {
             if let Ok(val) = http::HeaderValue::from_str(ip) {
@@ -290,7 +293,11 @@ impl Endpoint for CatalogEndpoint {
 
     fn headers(&self) -> http::HeaderMap {
         let mut map = http::HeaderMap::new();
-        apply_client_ip_headers(&mut map, self.client_ip.as_deref());
+        apply_client_ip_headers(
+            &mut map,
+            self.client_ip
+                .as_deref(),
+        );
         map
     }
 }
@@ -339,7 +346,11 @@ impl Endpoint for MetaEndpoint {
 
     fn headers(&self) -> http::HeaderMap {
         let mut map = http::HeaderMap::new();
-        apply_client_ip_headers(&mut map, self.client_ip.as_deref());
+        apply_client_ip_headers(
+            &mut map,
+            self.client_ip
+                .as_deref(),
+        );
         map
     }
 }
@@ -376,7 +387,11 @@ impl Endpoint for SubtitlesEndpoint {
 
     fn headers(&self) -> http::HeaderMap {
         let mut map = http::HeaderMap::new();
-        apply_client_ip_headers(&mut map, self.client_ip.as_deref());
+        apply_client_ip_headers(
+            &mut map,
+            self.client_ip
+                .as_deref(),
+        );
         map
     }
 }
@@ -910,7 +925,11 @@ impl Endpoint for StreamEndpoint {
             http::header::USER_AGENT,
             http::HeaderValue::from_static("AIOStreams/1.0"),
         );
-        apply_client_ip_headers(&mut map, self.client_ip.as_deref());
+        apply_client_ip_headers(
+            &mut map,
+            self.client_ip
+                .as_deref(),
+        );
         map
     }
 }
@@ -1123,7 +1142,8 @@ pub fn client(base: &str) -> Result<RestClient, url::ParseError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaType, Meta, ReleaseInfo, parse_duration_lossy};
+    use super::{MediaType, Meta, ReleaseInfo, StreamEndpoint, parse_duration_lossy};
+    use crate::Endpoint;
     use std::time::Duration;
 
     #[test]
@@ -1261,9 +1281,24 @@ mod tests {
             client_ip: Some("203.0.113.45".to_string()),
         };
         let headers = ep_with_ip.headers();
-        assert_eq!(headers.get("X-Forwarded-For").unwrap(), "203.0.113.45");
-        assert_eq!(headers.get("X-Real-IP").unwrap(), "203.0.113.45");
-        assert_eq!(headers.get(http::header::USER_AGENT).unwrap(), "AIOStreams/1.0");
+        assert_eq!(
+            headers
+                .get("X-Forwarded-For")
+                .unwrap(),
+            "203.0.113.45"
+        );
+        assert_eq!(
+            headers
+                .get("X-Real-IP")
+                .unwrap(),
+            "203.0.113.45"
+        );
+        assert_eq!(
+            headers
+                .get(http::header::USER_AGENT)
+                .unwrap(),
+            "AIOStreams/1.0"
+        );
 
         let ep_with_private_ip = StreamEndpoint {
             kind: MediaType::Movie,
@@ -1271,8 +1306,16 @@ mod tests {
             client_ip: Some("192.168.1.100".to_string()),
         };
         let headers_private = ep_with_private_ip.headers();
-        assert!(headers_private.get("X-Forwarded-For").is_none());
-        assert!(headers_private.get("X-Real-IP").is_none());
+        assert!(
+            headers_private
+                .get("X-Forwarded-For")
+                .is_none()
+        );
+        assert!(
+            headers_private
+                .get("X-Real-IP")
+                .is_none()
+        );
 
         let ep_no_ip = StreamEndpoint {
             kind: MediaType::Movie,
@@ -1280,24 +1323,51 @@ mod tests {
             client_ip: None,
         };
         let headers_no_ip = ep_no_ip.headers();
-        assert!(headers_no_ip.get("X-Forwarded-For").is_none());
-        assert!(headers_no_ip.get("X-Real-IP").is_none());
+        assert!(
+            headers_no_ip
+                .get("X-Forwarded-For")
+                .is_none()
+        );
+        assert!(
+            headers_no_ip
+                .get("X-Real-IP")
+                .is_none()
+        );
     }
 
     #[test]
     fn meta_response_deserializes_null_and_empty_gracefully() {
         let null_resp: super::MetaResponse =
             serde_json::from_str(r#"{"meta": null}"#).expect("should parse null meta");
-        assert!(null_resp.meta.is_none());
+        assert!(
+            null_resp
+                .meta
+                .is_none()
+        );
 
         let empty_resp: super::MetaResponse =
             serde_json::from_str(r#"{}"#).expect("should parse empty meta object");
-        assert!(empty_resp.meta.is_none());
+        assert!(
+            empty_resp
+                .meta
+                .is_none()
+        );
 
-        let populated_resp: super::MetaResponse =
-            serde_json::from_str(r#"{"meta": {"id": "tt123", "type": "movie", "name": "Test"}}"#)
-                .expect("should parse populated meta");
-        assert!(populated_resp.meta.is_some());
-        assert_eq!(populated_resp.meta.unwrap().id, "tt123");
+        let populated_resp: super::MetaResponse = serde_json::from_str(
+            r#"{"meta": {"id": "tt123", "type": "movie", "name": "Test"}}"#,
+        )
+        .expect("should parse populated meta");
+        assert!(
+            populated_resp
+                .meta
+                .is_some()
+        );
+        assert_eq!(
+            populated_resp
+                .meta
+                .unwrap()
+                .id,
+            "tt123"
+        );
     }
 }

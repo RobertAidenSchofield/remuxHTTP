@@ -7399,10 +7399,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     Vec<sdks::stremio::Episode>,
                 > = episodes
                     .iter()
-                    .filter_map(|ep| {
-                        parse_stremio_season(ep)
-                            .map(|s| (s, ep.clone()))
-                    })
+                    .filter_map(|ep| parse_stremio_season(ep).map(|s| (s, ep.clone())))
                     .fold(std::collections::BTreeMap::new(), |mut acc, (s, ep)| {
                         acc.entry(s)
                             .or_default()
@@ -7487,10 +7484,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
             let seasons: std::collections::BTreeMap<i64, Vec<sdks::stremio::Episode>> =
                 episodes
                     .iter()
-                    .filter_map(|ep| {
-                        parse_stremio_season(ep)
-                            .map(|s| (s, ep.clone()))
-                    })
+                    .filter_map(|ep| parse_stremio_season(ep).map(|s| (s, ep.clone())))
                     .fold(
                         std::collections::BTreeMap::new(),
                         |mut acc, (season, ep)| {
@@ -7581,21 +7575,37 @@ pub fn parse_stremio_season(ep: &crate::sdks::stremio::Episode) -> Option<i64> {
     if let Some(s) = ep.season {
         return Some(s);
     }
-    let parts: Vec<&str> = ep.id.split(':').collect();
+    let parts: Vec<&str> = ep
+        .id
+        .split(':')
+        .collect();
     if parts.len() >= 3 {
-        parts[parts.len() - 2].parse::<i64>().ok()
+        parts[parts.len() - 2]
+            .parse::<i64>()
+            .ok()
     } else {
         None
     }
 }
 
 pub fn parse_stremio_episode(ep: &crate::sdks::stremio::Episode) -> Option<i64> {
-    if let Some(e) = ep.episode.or(ep.number) {
+    if let Some(e) = ep
+        .episode
+        .or(ep.number)
+    {
         return Some(e);
     }
-    let parts: Vec<&str> = ep.id.split(':').collect();
+    let parts: Vec<&str> = ep
+        .id
+        .split(':')
+        .collect();
     if parts.len() >= 2 {
-        parts.last().and_then(|s| s.parse::<i64>().ok())
+        parts
+            .last()
+            .and_then(|s| {
+                s.parse::<i64>()
+                    .ok()
+            })
     } else {
         None
     }
@@ -8636,9 +8646,15 @@ mod tests {
             writers: None,
             cast: None,
         };
-        let converted = stremio_meta_episode(&ep_number, series_id, season_id, 1, &ext).unwrap();
+        let converted =
+            stremio_meta_episode(&ep_number, series_id, season_id, 1, &ext).unwrap();
         assert_eq!(converted.idx, Some(3));
-        assert!(converted.validate().is_ok(), "episode with number fallback must validate");
+        assert!(
+            converted
+                .validate()
+                .is_ok(),
+            "episode with number fallback must validate"
+        );
 
         // Case 2: neither 'episode' nor 'number' provided, but id has :season:episode format
         let ep_id = sdks::stremio::Episode {
@@ -8659,9 +8675,15 @@ mod tests {
             writers: None,
             cast: None,
         };
-        let converted_id = stremio_meta_episode(&ep_id, series_id, season_id, 2, &ext).unwrap();
+        let converted_id =
+            stremio_meta_episode(&ep_id, series_id, season_id, 2, &ext).unwrap();
         assert_eq!(converted_id.idx, Some(5));
-        assert!(converted_id.validate().is_ok(), "episode with ID fallback must validate");
+        assert!(
+            converted_id
+                .validate()
+                .is_ok(),
+            "episode with ID fallback must validate"
+        );
     }
 
     /// Regression test for #235: episode/season UUIDs must be anchored to the

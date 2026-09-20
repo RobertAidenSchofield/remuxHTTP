@@ -6,10 +6,10 @@ use dioxus::prelude::*;
 use remux_sdks::remux::{
     CountryInfo, CultureDto, EmbeddedSubtitleHandling, EncodingOptions, GetCountries,
     GetCultures, GetEncodingConfiguration, GetIntroConfiguration,
-    GetSimklConfiguration, GetSystemConfiguration, HardwareAccelerationType, IntroOptions,
-    IntroOrder, IntroTriggers, ServerConfiguration, SimklGlobalConfigDto,
-    SortMediaSourcesMode, StartTask, UpdateEncodingConfiguration, UpdateIntroConfiguration,
-    UpdateSimklConfiguration, UpdateSystemConfiguration,
+    GetSimklConfiguration, GetSystemConfiguration, HardwareAccelerationType,
+    IntroOptions, IntroOrder, IntroTriggers, ServerConfiguration, SimklGlobalConfigDto,
+    SortMediaSourcesMode, StartTask, UpdateEncodingConfiguration,
+    UpdateIntroConfiguration, UpdateSimklConfiguration, UpdateSystemConfiguration,
 };
 
 #[component]
@@ -1937,12 +1937,17 @@ pub fn SimklSettingsCard(app_state: AppState) -> Element {
     use_effect(move || {
         let client = app_state_load.clone();
         spawn(async move {
-            match client.execute(GetSimklConfiguration).await {
+            match client
+                .execute(GetSimklConfiguration)
+                .await
+            {
                 Ok(cfg) => {
                     client_id.set(cfg.client_id);
                     completion_threshold.set(cfg.completion_threshold);
                 }
-                Err(e) => error.set(Some(format!("Failed to load Simkl settings: {e}"))),
+                Err(e) => {
+                    error.set(Some(format!("Failed to load Simkl settings: {e}")))
+                }
             }
             loading.set(false);
         });
@@ -1952,14 +1957,20 @@ pub fn SimklSettingsCard(app_state: AppState) -> Element {
         e.prevent_default();
         let client = app_state.clone();
         let updated = SimklGlobalConfigDto {
-            client_id: client_id.peek().trim().to_string(),
+            client_id: client_id
+                .peek()
+                .trim()
+                .to_string(),
             completion_threshold: *completion_threshold.peek(),
         };
         saving.set(true);
         error.set(None);
         saved.set(false);
         spawn(async move {
-            match client.execute(UpdateSimklConfiguration { config: updated }).await {
+            match client
+                .execute(UpdateSimklConfiguration { config: updated })
+                .await
+            {
                 Ok(_) => saved.set(true),
                 Err(e) => error.set(Some(e.user_message())),
             }
@@ -2028,4 +2039,3 @@ pub fn SimklSettingsCard(app_state: AppState) -> Element {
         }
     }
 }
-

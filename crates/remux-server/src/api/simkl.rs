@@ -21,7 +21,14 @@ use crate::{
 const MASKED_TOKEN: &str = "••••••••";
 
 fn require_self_or_admin(target_id: Uuid, session: &auth::AuthSession) -> Result<()> {
-    if target_id != session.user.id && !session.user.is_admin {
+    if target_id
+        != session
+            .user
+            .id
+        && !session
+            .user
+            .is_admin
+    {
         return Err(anyhow::anyhow!("Forbidden").context_unauthorized("forbidden"));
     }
     Ok(())
@@ -41,7 +48,16 @@ pub async fn get_simkl_settings(
     State(state): State<AppState>,
     _session: auth::AdminSession,
 ) -> Result<impl IntoResponse> {
-    let cfg = db::Settings::get_simkl_config(&state.ctx.db, &state.ctx.config.simkl).await?;
+    let cfg = db::Settings::get_simkl_config(
+        &state
+            .ctx
+            .db,
+        &state
+            .ctx
+            .config
+            .simkl,
+    )
+    .await?;
     let dto = SimklGlobalConfigDto {
         client_id: cfg.client_id,
         completion_threshold: cfg.completion_threshold,
@@ -56,12 +72,41 @@ pub async fn update_simkl_settings(
     _session: auth::AdminSession,
     Json(payload): Json<SimklGlobalConfigDto>,
 ) -> Result<impl IntoResponse> {
-    let mut cfg = db::Settings::get_simkl_config(&state.ctx.db, &state.ctx.config.simkl).await?;
-    cfg.client_id = payload.client_id;
+    let mut cfg = db::Settings::get_simkl_config(
+        &state
+            .ctx
+            .db,
+        &state
+            .ctx
+            .config
+            .simkl,
+    )
+    .await?;
+    cfg.client_id = payload
+        .client_id
+        .trim()
+        .to_string();
     if payload.completion_threshold > 0 {
         cfg.completion_threshold = payload.completion_threshold;
     }
-    db::Settings::set_simkl_config(&state.ctx.db, &cfg).await?;
+    db::Settings::set_simkl_config(
+        &state
+            .ctx
+            .db,
+        &cfg,
+    )
+    .await?;
+    tracing::info!(
+        has_client_id = !cfg
+            .client_id
+            .is_empty(),
+        client_id_prefix = &cfg.client_id[..cfg
+            .client_id
+            .len()
+            .min(4)],
+        completion_threshold = cfg.completion_threshold,
+        "[Simkl] Saved global Simkl settings in database"
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -73,13 +118,23 @@ pub async fn get_user_simkl_settings(
     Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     require_self_or_admin(user_id, &session)?;
-    let user_cfg =
-        db::Settings::get_user_simkl_config(&state.ctx.db, &state.ctx.config.simkl, &user_id)
-            .await?;
+    let user_cfg = db::Settings::get_user_simkl_config(
+        &state
+            .ctx
+            .db,
+        &state
+            .ctx
+            .config
+            .simkl,
+        &user_id,
+    )
+    .await?;
     let dto = SimklUserConfigDto {
         enabled: user_cfg.enabled,
         user_token: mask_token(&user_cfg.user_token),
-        has_token: !user_cfg.user_token.is_empty(),
+        has_token: !user_cfg
+            .user_token
+            .is_empty(),
         sync_continue_watching: user_cfg.sync_continue_watching,
     };
     Ok(Json(dto))
@@ -94,16 +149,29 @@ pub async fn update_user_simkl_settings(
     Json(payload): Json<SimklUserConfigDto>,
 ) -> Result<impl IntoResponse> {
     require_self_or_admin(user_id, &session)?;
-    let existing =
-        db::Settings::get_user_simkl_config(&state.ctx.db, &state.ctx.config.simkl, &user_id)
-            .await?;
+    let existing = db::Settings::get_user_simkl_config(
+        &state
+            .ctx
+            .db,
+        &state
+            .ctx
+            .config
+            .simkl,
+        &user_id,
+    )
+    .await?;
 
-    let new_token = if payload.user_token.is_empty() || payload.user_token == MASKED_TOKEN {
+    let new_token = if payload
+        .user_token
+        .is_empty()
+        || payload.user_token == MASKED_TOKEN
+    {
         existing.user_token
     } else {
         payload.user_token
     };
 
+    let has_token = !new_token.is_empty();
     let user_config = crate::SimklUserConfig {
         enabled: payload.enabled,
         user_token: new_token,
@@ -111,12 +179,25 @@ pub async fn update_user_simkl_settings(
     };
 
     db::Settings::set_user_simkl_config(
-        &state.ctx.db,
-        &state.ctx.config.simkl,
+        &state
+            .ctx
+            .db,
+        &state
+            .ctx
+            .config
+            .simkl,
         &user_id,
         user_config,
     )
     .await?;
+
+    tracing::info!(
+        %user_id,
+        enabled = payload.enabled,
+        sync_continue_watching = payload.sync_continue_watching,
+        has_token,
+        "[Simkl] Updated user Simkl configuration"
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -130,21 +211,48 @@ pub async fn test_user_simkl_connection(
     payload: Option<Json<SimklUserConfigDto>>,
 ) -> Result<impl IntoResponse> {
     require_self_or_admin(user_id, &session)?;
-    let global_cfg =
-        db::Settings::get_simkl_config(&state.ctx.db, &state.ctx.config.simkl).await?;
-    if global_cfg.client_id.is_empty() {
+    let global_cfg = db::Settings::get_simkl_config(
+        &state
+            .ctx
+            .db,
+        &state
+            .ctx
+            .config
+            .simkl,
+    )
+    .await?;
+    if global_cfg
+        .client_id
+        .is_empty()
+    {
+        tracing::warn!(%user_id, "[Simkl] Connection test requested but Client ID is not configured");
         return Ok(Json(SimklTestResultDto {
             success: false,
             message: "Simkl Client ID is not configured in Server Settings".to_string(),
         }));
     }
 
-    let existing =
-        db::Settings::get_user_simkl_config(&state.ctx.db, &state.ctx.config.simkl, &user_id)
-            .await?;
+    let existing = db::Settings::get_user_simkl_config(
+        &state
+            .ctx
+            .db,
+        &state
+            .ctx
+            .config
+            .simkl,
+        &user_id,
+    )
+    .await?;
 
     let token = match payload {
-        Some(Json(p)) if !p.user_token.is_empty() && p.user_token != MASKED_TOKEN => p.user_token,
+        Some(Json(p))
+            if !p
+                .user_token
+                .is_empty()
+                && p.user_token != MASKED_TOKEN =>
+        {
+            p.user_token
+        }
         _ => existing.user_token,
     };
 
@@ -175,12 +283,32 @@ pub async fn start_user_simkl_device_auth(
     Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     require_self_or_admin(user_id, &session)?;
-    let global_cfg =
-        db::Settings::get_simkl_config(&state.ctx.db, &state.ctx.config.simkl).await?;
-    if global_cfg.client_id.is_empty() {
-        return Err(anyhow::anyhow!("Simkl Client ID is not configured in Server Settings")
-            .context_bad_request("missing_client_id"));
+    let global_cfg = db::Settings::get_simkl_config(
+        &state
+            .ctx
+            .db,
+        &state
+            .ctx
+            .config
+            .simkl,
+    )
+    .await?;
+    if global_cfg
+        .client_id
+        .is_empty()
+    {
+        tracing::warn!(%user_id, "[Simkl] Device auth requested but Client ID is not configured");
+        return Err(anyhow::anyhow!(
+            "Simkl Client ID is not configured in Server Settings"
+        )
+        .context_bad_request("missing_client_id"));
     }
+
+    tracing::info!(
+        %user_id,
+        client_id_prefix = &global_cfg.client_id[..global_cfg.client_id.len().min(4)],
+        "[Simkl] Starting PIN authorization"
+    );
 
     let resp = SimklService::start_device_auth(&global_cfg.client_id, user_id)
         .await
@@ -203,17 +331,30 @@ pub async fn poll_user_simkl_device_auth(
     Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     require_self_or_admin(user_id, &session)?;
-    let global_cfg =
-        db::Settings::get_simkl_config(&state.ctx.db, &state.ctx.config.simkl).await?;
-    if global_cfg.client_id.is_empty() {
-        return Err(anyhow::anyhow!("Simkl Client ID is not configured in Server Settings")
-            .context_bad_request("missing_client_id"));
+    let global_cfg = db::Settings::get_simkl_config(
+        &state
+            .ctx
+            .db,
+        &state
+            .ctx
+            .config
+            .simkl,
+    )
+    .await?;
+    if global_cfg
+        .client_id
+        .is_empty()
+    {
+        tracing::warn!(%user_id, "[Simkl] Device poll requested but Client ID is not configured");
+        return Err(anyhow::anyhow!(
+            "Simkl Client ID is not configured in Server Settings"
+        )
+        .context_bad_request("missing_client_id"));
     }
 
-    let res = SimklService::poll_device_auth(&state.ctx, &global_cfg.client_id, user_id)
-        .await
-        .map_err(|e| e.context_bad_request("simkl_device_poll_failed"))?;
+    let res =
+        SimklService::poll_device_auth(&state.ctx, &global_cfg.client_id, user_id)
+            .await
+            .map_err(|e| e.context_bad_request("simkl_device_poll_failed"))?;
     Ok(Json(res))
 }
-
-

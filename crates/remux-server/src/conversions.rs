@@ -225,19 +225,35 @@ pub(crate) fn apply_filename_guess(
     let filename_opt = source
         .stream_info
         .as_ref()
-        .and_then(|si| si.filename.clone())
+        .and_then(|si| {
+            si.filename
+                .clone()
+        })
         .or_else(|| {
-            source.stream_info.as_ref().and_then(|si| {
-                si.descriptor.as_http_url().and_then(|u| {
-                    url::Url::parse(u).ok().and_then(|parsed| {
-                        parsed
-                            .path_segments()?
-                            .next_back()
-                            .filter(|s| s.contains('.') && !s.ends_with('.'))
-                            .and_then(|s| urlencoding::decode(s).ok().map(|c| c.into_owned()))
-                    })
+            source
+                .stream_info
+                .as_ref()
+                .and_then(|si| {
+                    si.descriptor
+                        .as_http_url()
+                        .and_then(|u| {
+                            url::Url::parse(u)
+                                .ok()
+                                .and_then(|parsed| {
+                                    parsed
+                                        .path_segments()?
+                                        .next_back()
+                                        .filter(|s| {
+                                            s.contains('.') && !s.ends_with('.')
+                                        })
+                                        .and_then(|s| {
+                                            urlencoding::decode(s)
+                                                .ok()
+                                                .map(|c| c.into_owned())
+                                        })
+                                })
+                        })
                 })
-            })
         });
 
     if let Some(filename) = filename_opt {
@@ -294,7 +310,10 @@ pub(crate) fn apply_filename_guess(
 }
 
 fn map_language_name(name: &str) -> Option<(&'static str, &'static str)> {
-    let clean = name.trim().trim_matches(|c: char| !c.is_alphabetic()).to_ascii_lowercase();
+    let clean = name
+        .trim()
+        .trim_matches(|c: char| !c.is_alphabetic())
+        .to_ascii_lowercase();
     match clean.as_str() {
         "english" | "eng" => Some(("eng", "English")),
         "spanish" | "spa" | "espanol" | "castellano" => Some(("spa", "Spanish")),
@@ -305,7 +324,9 @@ fn map_language_name(name: &str) -> Option<(&'static str, &'static str)> {
         "russian" | "rus" => Some(("rus", "Russian")),
         "japanese" | "jpn" => Some(("jpn", "Japanese")),
         "korean" | "kor" => Some(("kor", "Korean")),
-        "chinese" | "zho" | "chi" | "mandarin" | "cantonese" => Some(("zho", "Chinese")),
+        "chinese" | "zho" | "chi" | "mandarin" | "cantonese" => {
+            Some(("zho", "Chinese"))
+        }
         "hindi" | "hin" => Some(("hin", "Hindi")),
         "arabic" | "ara" => Some(("ara", "Arabic")),
         "dutch" | "nld" | "dut" => Some(("nld", "Dutch")),
@@ -347,13 +368,18 @@ fn map_language_name(name: &str) -> Option<(&'static str, &'static str)> {
 
 fn extract_languages_from_section(section: &str) -> Vec<(&'static str, &'static str)> {
     let mut langs = Vec::new();
-    for token in section.split(|c: char| matches!(c, '•' | '|' | '/' | ',' | ';' | '\n' | '+')) {
+    for token in
+        section.split(|c: char| matches!(c, '•' | '|' | '/' | ',' | ';' | '\n' | '+'))
+    {
         let trimmed = token.trim();
         if trimmed.is_empty() {
             continue;
         }
         if let Some(mapped) = map_language_name(trimmed) {
-            if !langs.iter().any(|(code, _)| *code == mapped.0) {
+            if !langs
+                .iter()
+                .any(|(code, _)| *code == mapped.0)
+            {
                 langs.push(mapped);
             }
         }
@@ -361,7 +387,11 @@ fn extract_languages_from_section(section: &str) -> Vec<(&'static str, &'static 
     langs
 }
 
-fn extract_language_section<'a>(title: &'a str, markers: &[&str], terminators: &[&str]) -> Option<&'a str> {
+fn extract_language_section<'a>(
+    title: &'a str,
+    markers: &[&str],
+    terminators: &[&str],
+) -> Option<&'a str> {
     for marker in markers {
         if let Some(idx) = title.find(marker) {
             let start = idx + marker.len();
@@ -387,39 +417,67 @@ pub(crate) fn enrich_media_streams_from_title(
     let audio_section = extract_language_section(
         title,
         &["🌎", "🌐", "Audio:", "audio:"],
-        &["📝", "💬", "Subtitles:", "subtitles:", "Subs:", "📦", "📁", "\n\n"],
+        &[
+            "📝",
+            "💬",
+            "Subtitles:",
+            "subtitles:",
+            "Subs:",
+            "📦",
+            "📁",
+            "\n\n",
+        ],
     );
-    let audio_langs = audio_section.map(extract_languages_from_section).unwrap_or_default();
+    let audio_langs = audio_section
+        .map(extract_languages_from_section)
+        .unwrap_or_default();
 
     let sub_section = extract_language_section(
         title,
         &["📝", "💬", "Subtitles:", "subtitles:", "Subs:"],
         &["🌎", "🌐", "Audio:", "audio:", "📦", "📁", "\n\n"],
     );
-    let sub_langs = sub_section.map(extract_languages_from_section).unwrap_or_default();
+    let sub_langs = sub_section
+        .map(extract_languages_from_section)
+        .unwrap_or_default();
 
     if audio_langs.is_empty() && sub_langs.is_empty() {
         return;
     }
 
-    let existing_audio_idx = streams.iter().position(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)));
+    let existing_audio_idx = streams
+        .iter()
+        .position(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)));
 
-    let (base_codec, base_channels, base_title) = if let Some(idx) = existing_audio_idx {
+    let (base_codec, base_channels, base_title) = if let Some(idx) = existing_audio_idx
+    {
         (
-            streams[idx].codec.clone(),
+            streams[idx]
+                .codec
+                .clone(),
             streams[idx].channels,
-            streams[idx].display_title.clone(),
+            streams[idx]
+                .display_title
+                .clone(),
         )
     } else {
         (Some("aac".to_string()), Some(2), Some("Audio".to_string()))
     };
 
-    let mut next_idx = streams.iter().map(|s| s.index).max().unwrap_or(-1) + 1;
+    let mut next_idx = streams
+        .iter()
+        .map(|s| s.index)
+        .max()
+        .unwrap_or(-1)
+        + 1;
 
     if !audio_langs.is_empty() {
         let (first_lang_code, first_lang_name) = audio_langs[0];
         if let Some(idx) = existing_audio_idx {
-            if streams[idx].language.is_none() {
+            if streams[idx]
+                .language
+                .is_none()
+            {
                 streams[idx].language = Some(first_lang_code.to_string());
                 let meta = StreamMeta {
                     language: Some(first_lang_name),
@@ -428,7 +486,13 @@ pub(crate) fn enrich_media_streams_from_title(
                     ..Default::default()
                 };
                 streams[idx].display_title = display_title_audio(&meta).or_else(|| {
-                    Some(format!("{} - {}", first_lang_name, base_title.as_deref().unwrap_or("Audio")))
+                    Some(format!(
+                        "{} - {}",
+                        first_lang_name,
+                        base_title
+                            .as_deref()
+                            .unwrap_or("Audio")
+                    ))
                 });
                 streams[idx].is_default = Some(true);
             }
@@ -446,7 +510,13 @@ pub(crate) fn enrich_media_streams_from_title(
                 channels: base_channels,
                 language: Some(first_lang_code.to_string()),
                 display_title: display_title_audio(&meta).or_else(|| {
-                    Some(format!("{} - {}", first_lang_name, base_title.as_deref().unwrap_or("Audio")))
+                    Some(format!(
+                        "{} - {}",
+                        first_lang_name,
+                        base_title
+                            .as_deref()
+                            .unwrap_or("Audio")
+                    ))
                 }),
                 is_default: Some(true),
                 ..Default::default()
@@ -456,7 +526,15 @@ pub(crate) fn enrich_media_streams_from_title(
 
         // Add remaining audio tracks if not already present
         for (code, name) in &audio_langs[1..] {
-            if streams.iter().any(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)) && s.language.as_deref() == Some(*code)) {
+            if streams
+                .iter()
+                .any(|s| {
+                    matches!(s.type_, Some(api::MediaStreamType::Audio))
+                        && s.language
+                            .as_deref()
+                            == Some(*code)
+                })
+            {
                 continue;
             }
             let meta = StreamMeta {
@@ -472,7 +550,13 @@ pub(crate) fn enrich_media_streams_from_title(
                 channels: base_channels,
                 language: Some(code.to_string()),
                 display_title: display_title_audio(&meta).or_else(|| {
-                    Some(format!("{} - {}", name, base_title.as_deref().unwrap_or("Audio")))
+                    Some(format!(
+                        "{} - {}",
+                        name,
+                        base_title
+                            .as_deref()
+                            .unwrap_or("Audio")
+                    ))
                 }),
                 is_default: Some(false),
                 ..Default::default()
@@ -482,7 +566,9 @@ pub(crate) fn enrich_media_streams_from_title(
     }
 
     // Add subtitle tracks if no subtitles currently exist in streams
-    let has_subtitles = streams.iter().any(|s| matches!(s.type_, Some(api::MediaStreamType::Subtitle)));
+    let has_subtitles = streams
+        .iter()
+        .any(|s| matches!(s.type_, Some(api::MediaStreamType::Subtitle)));
     if !has_subtitles && !sub_langs.is_empty() {
         for (code, name) in sub_langs {
             streams.push(api::MediaStream {
@@ -608,7 +694,10 @@ impl From<db::Media> for api::MediaSourceInfo {
             .filter(|url| {
                 url::Url::parse(url)
                     .ok()
-                    .and_then(|u| u.host_str().map(|h| !crate::stream::is_internal_host(h)))
+                    .and_then(|u| {
+                        u.host_str()
+                            .map(|h| !crate::stream::is_internal_host(h))
+                    })
                     .unwrap_or(false)
             });
 
@@ -657,7 +746,9 @@ impl From<db::Media> for api::MediaSourceInfo {
             .probe_data
             .as_ref()
             .map(|p| {
-                let mut media_streams = p.media_streams.clone();
+                let mut media_streams = p
+                    .media_streams
+                    .clone();
                 for s in &mut media_streams {
                     if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
                         s.is_text_subtitle_stream = s.is_text_subtitle_stream();
@@ -791,10 +882,18 @@ impl TryFrom<stremio::Episode> for db::Media {
     fn try_from(meta: stremio::Episode) -> Result<db::Media> {
         let idx = db::parse_stremio_episode(&meta);
         let parent_idx = db::parse_stremio_season(&meta);
-        let title = meta.get_name().unwrap_or_default();
-        let released_at = meta.released.map(|x| x.naive_utc());
-        let runtime = meta.runtime.map(|d| d.num_seconds());
-        let description = meta.overview.or(meta.description);
+        let title = meta
+            .get_name()
+            .unwrap_or_default();
+        let released_at = meta
+            .released
+            .map(|x| x.naive_utc());
+        let runtime = meta
+            .runtime
+            .map(|d| d.num_seconds());
+        let description = meta
+            .overview
+            .or(meta.description);
         let rating_audience = meta.rating;
         let thumbnail = meta.thumbnail;
         let mut media = db::Media {
@@ -878,13 +977,20 @@ pub fn stream_into_media_source_info(
     stream: stremio::Stream,
 ) -> api::MediaSourceInfo {
     let id = get_uuid();
-    let is_reachable_http = stream.url.as_ref().map_or(false, |u| {
-        (u.starts_with("http://") || u.starts_with("https://"))
-            && url::Url::parse(u)
-                .ok()
-                .and_then(|parsed| parsed.host_str().map(|h| !crate::stream::is_internal_host(h)))
-                .unwrap_or(false)
-    });
+    let is_reachable_http = stream
+        .url
+        .as_ref()
+        .map_or(false, |u| {
+            (u.starts_with("http://") || u.starts_with("https://"))
+                && url::Url::parse(u)
+                    .ok()
+                    .and_then(|parsed| {
+                        parsed
+                            .host_str()
+                            .map(|h| !crate::stream::is_internal_host(h))
+                    })
+                    .unwrap_or(false)
+        });
     let (protocol, is_remote) = if is_reachable_http {
         (api::MediaProtocol::Http, true)
     } else {
@@ -1512,19 +1618,59 @@ mod tests {
             .filter(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)))
             .collect();
         assert_eq!(audio_streams.len(), 5);
-        assert_eq!(audio_streams[0].language.as_deref(), Some("eng"));
-        assert_eq!(audio_streams[1].language.as_deref(), Some("spa"));
-        assert_eq!(audio_streams[2].language.as_deref(), Some("fra"));
-        assert_eq!(audio_streams[3].language.as_deref(), Some("deu"));
-        assert_eq!(audio_streams[4].language.as_deref(), Some("ita"));
+        assert_eq!(
+            audio_streams[0]
+                .language
+                .as_deref(),
+            Some("eng")
+        );
+        assert_eq!(
+            audio_streams[1]
+                .language
+                .as_deref(),
+            Some("spa")
+        );
+        assert_eq!(
+            audio_streams[2]
+                .language
+                .as_deref(),
+            Some("fra")
+        );
+        assert_eq!(
+            audio_streams[3]
+                .language
+                .as_deref(),
+            Some("deu")
+        );
+        assert_eq!(
+            audio_streams[4]
+                .language
+                .as_deref(),
+            Some("ita")
+        );
 
         let sub_streams: Vec<_> = streams
             .iter()
             .filter(|s| matches!(s.type_, Some(api::MediaStreamType::Subtitle)))
             .collect();
         assert_eq!(sub_streams.len(), 3);
-        assert_eq!(sub_streams[0].language.as_deref(), Some("eng"));
-        assert_eq!(sub_streams[1].language.as_deref(), Some("rus"));
-        assert_eq!(sub_streams[2].language.as_deref(), Some("spa"));
+        assert_eq!(
+            sub_streams[0]
+                .language
+                .as_deref(),
+            Some("eng")
+        );
+        assert_eq!(
+            sub_streams[1]
+                .language
+                .as_deref(),
+            Some("rus")
+        );
+        assert_eq!(
+            sub_streams[2]
+                .language
+                .as_deref(),
+            Some("spa")
+        );
     }
 }

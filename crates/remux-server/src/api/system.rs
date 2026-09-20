@@ -911,7 +911,9 @@ pub async fn backup_manifest(_session: auth::AdminSession) -> impl IntoResponse 
 
 /// Alternate sources deletion stub for Jellyfin 12
 #[delete("/videos/{id}/alternatesources", "/items/{id}/alternatesources")]
-pub async fn delete_alternate_sources(_session: auth::AdminSession) -> impl IntoResponse {
+pub async fn delete_alternate_sources(
+    _session: auth::AdminSession,
+) -> impl IntoResponse {
     StatusCode::NO_CONTENT
 }
 
@@ -1375,7 +1377,9 @@ mod test {
         let auth = auth_header_with_token(&token);
 
         // GET /fallbackfont/fonts
-        let resp = server.get("/fallbackfont/fonts").await;
+        let resp = server
+            .get("/fallbackfont/fonts")
+            .await;
         resp.assert_status_ok();
         assert_eq!(resp.text(), "[]");
 

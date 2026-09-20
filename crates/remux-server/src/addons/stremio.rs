@@ -200,7 +200,9 @@ pub struct StremioAddon {
     /// Shared between the tree-children path and `stremio_meta_fetch` so the API is
     /// called exactly once per series. Evicted by `on_series_done`.
     medias_cache: Arc<
-        std::sync::Mutex<std::collections::HashMap<String, Option<Arc<sdks::stremio::Meta>>>>,
+        std::sync::Mutex<
+            std::collections::HashMap<String, Option<Arc<sdks::stremio::Meta>>>,
+        >,
     >,
     /// Series-level lookup ids whose fetch already failed during this tree
     /// walk. Without this, every season and episode under a series whose
@@ -473,7 +475,8 @@ impl TreeAddon for StremioAddon {
                     &self.failed,
                     ctx,
                 )
-                .await? {
+                .await?
+                {
                     Some(m) => m,
                     None => return Ok(None),
                 };
@@ -850,9 +853,10 @@ async fn fetch_and_cache_meta(
         Some(stored)
     } else {
         let series_ext = match media.kind {
-            db::MediaKind::Season | db::MediaKind::Episode => {
-                media.grandparent.as_deref().map(|gp| &gp.external_ids)
-            }
+            db::MediaKind::Season | db::MediaKind::Episode => media
+                .grandparent
+                .as_deref()
+                .map(|gp| &gp.external_ids),
             _ => Some(&media.external_ids),
         };
 
@@ -878,25 +882,38 @@ async fn fetch_and_cache_meta(
             candidate_ids.insert(0, meta_id.clone());
         }
 
-        let manifest = svc.get_manifest().await.ok();
-        let meta_prefixes: Option<Vec<String>> = manifest.as_ref().and_then(|m| {
-            m.resources
-                .iter()
-                .find_map(|r| match r {
-                    sdks::stremio::Resource::Detailed(r)
-                        if r.name == sdks::stremio::ResourceType::Meta =>
-                    {
-                        r.id_prefixes.clone()
-                    }
-                    _ => None,
-                })
-                .or_else(|| m.id_prefixes.clone())
-        });
+        let manifest = svc
+            .get_manifest()
+            .await
+            .ok();
+        let meta_prefixes: Option<Vec<String>> = manifest
+            .as_ref()
+            .and_then(|m| {
+                m.resources
+                    .iter()
+                    .find_map(|r| match r {
+                        sdks::stremio::Resource::Detailed(r)
+                            if r.name == sdks::stremio::ResourceType::Meta =>
+                        {
+                            r.id_prefixes
+                                .clone()
+                        }
+                        _ => None,
+                    })
+                    .or_else(|| {
+                        m.id_prefixes
+                            .clone()
+                    })
+            });
 
         if let Some(prefixes) = meta_prefixes.as_deref() {
             let (matching, non_matching): (Vec<String>, Vec<String>) = candidate_ids
                 .into_iter()
-                .partition(|id| prefixes.iter().any(|p| id.starts_with(p.as_str())));
+                .partition(|id| {
+                    prefixes
+                        .iter()
+                        .any(|p| id.starts_with(p.as_str()))
+                });
             let mut ordered = matching;
             ordered.extend(non_matching);
             candidate_ids = ordered;
@@ -908,7 +925,10 @@ async fn fetch_and_cache_meta(
 
         let mut found_meta = None;
         for id in candidate_ids {
-            match svc.get_meta(media_type.clone(), id.clone(), None).await {
+            match svc
+                .get_meta(media_type.clone(), id.clone(), None)
+                .await
+            {
                 Ok(Some(m)) => {
                     if m.is_error() {
                         debug!(id = %id, "stremio meta candidate returned error meta");
@@ -1001,10 +1021,11 @@ async fn stremio_meta_fetch(
             .clone());
     let is_custom = imdb_id.is_none();
 
-    let meta_arc = match fetch_and_cache_meta(svc, media, medias_cache, failed, ctx).await? {
-        Some(m) => m,
-        None => return Ok(None),
-    };
+    let meta_arc =
+        match fetch_and_cache_meta(svc, media, medias_cache, failed, ctx).await? {
+            Some(m) => m,
+            None => return Ok(None),
+        };
 
     match media.kind {
         db::MediaKind::Movie | db::MediaKind::Series => {
@@ -1522,15 +1543,24 @@ fn stremio_stream_metadata(stream: &sdks::stremio::Stream) -> StremioStreamMetad
                     .clone()
             })
             .or_else(|| {
-                stream.url.as_ref().and_then(|u| {
-                    url::Url::parse(u).ok().and_then(|parsed| {
-                        parsed
-                            .path_segments()?
-                            .next_back()
-                            .filter(|s| s.contains('.') && !s.ends_with('.'))
-                            .and_then(|s| urlencoding::decode(s).ok().map(|c| c.into_owned()))
+                stream
+                    .url
+                    .as_ref()
+                    .and_then(|u| {
+                        url::Url::parse(u)
+                            .ok()
+                            .and_then(|parsed| {
+                                parsed
+                                    .path_segments()?
+                                    .next_back()
+                                    .filter(|s| s.contains('.') && !s.ends_with('.'))
+                                    .and_then(|s| {
+                                        urlencoding::decode(s)
+                                            .ok()
+                                            .map(|c| c.into_owned())
+                                    })
+                            })
                     })
-                })
             }),
         file_idx: stream
             .file_idx
@@ -2013,7 +2043,12 @@ mod tests {
 
         null_attempt.assert();
         assert!(result.is_ok());
-        assert!(result.unwrap().is_none(), "null meta must deserialize to Ok(None)");
+        assert!(
+            result
+                .unwrap()
+                .is_none(),
+            "null meta must deserialize to Ok(None)"
+        );
     }
 
     #[tokio::test]
@@ -2039,7 +2074,9 @@ mod tests {
 
         success_attempt.assert();
         assert!(result.is_ok());
-        let meta = result.unwrap().expect("should return Some(Meta)");
+        let meta = result
+            .unwrap()
+            .expect("should return Some(Meta)");
         assert_eq!(meta.id, "tmdb:67535");
         assert_eq!(meta.get_name(), Some("The Grand Tour".to_string()));
     }

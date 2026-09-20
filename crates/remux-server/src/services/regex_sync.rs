@@ -37,14 +37,25 @@ impl DynamicRegexState {
     }
 
     pub fn is_match(&self, text: &str) -> bool {
-        self.compiled.iter().any(|re| re.is_match(text))
+        self.compiled
+            .iter()
+            .any(|re| re.is_match(text))
     }
 
     pub fn matching_patterns<'a>(&'a self, text: &'a str) -> Vec<&'a str> {
         self.compiled
             .iter()
-            .zip(self.patterns.iter())
-            .filter_map(|(re, pat)| if re.is_match(text) { Some(pat.as_str()) } else { None })
+            .zip(
+                self.patterns
+                    .iter(),
+            )
+            .filter_map(|(re, pat)| {
+                if re.is_match(text) {
+                    Some(pat.as_str())
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 }
@@ -112,7 +123,8 @@ impl RegexSyncService {
                     if !invalid.is_empty() {
                         warn!(
                             count = invalid.len(),
-                            "safely ignored invalid regex patterns in cache: {:?}", invalid
+                            "safely ignored invalid regex patterns in cache: {:?}",
+                            invalid
                         );
                     }
                     info!(
@@ -146,8 +158,9 @@ impl RegexSyncService {
     pub fn save_to_cache(fallback_path: &str, patterns: &[String]) -> Result<()> {
         let cache_file = Self::resolve_cache_file_path(fallback_path);
         if let Some(parent) = cache_file.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create cache directory: {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create cache directory: {}", parent.display())
+            })?;
         }
 
         let json = serde_json::to_string_pretty(&RemoteRegexPayload::Patterns {
@@ -155,11 +168,16 @@ impl RegexSyncService {
         })?;
 
         let temp_file = cache_file.with_extension("tmp");
-        fs::write(&temp_file, json)
-            .with_context(|| format!("failed to write temporary cache file: {}", temp_file.display()))?;
+        fs::write(&temp_file, json).with_context(|| {
+            format!(
+                "failed to write temporary cache file: {}",
+                temp_file.display()
+            )
+        })?;
 
-        fs::rename(&temp_file, &cache_file)
-            .with_context(|| format!("failed to rename cache file to: {}", cache_file.display()))?;
+        fs::rename(&temp_file, &cache_file).with_context(|| {
+            format!("failed to rename cache file to: {}", cache_file.display())
+        })?;
 
         debug!(path = %cache_file.display(), count = patterns.len(), "saved regex rules to cache");
         Ok(())
@@ -172,8 +190,14 @@ impl RegexSyncService {
         let mut all_patterns = Vec::new();
         let mut any_fetch_succeeded = false;
 
-        for url in &self.config.urls {
-            match self.fetch_single_url(url).await {
+        for url in &self
+            .config
+            .urls
+        {
+            match self
+                .fetch_single_url(url)
+                .await
+            {
                 Ok(patterns) => {
                     any_fetch_succeeded = true;
                     all_patterns.extend(patterns);
@@ -211,8 +235,17 @@ impl RegexSyncService {
             );
 
             // Persist valid patterns to disk cache
-            if !self.config.fallback_cache_path.is_empty() {
-                if let Err(e) = Self::save_to_cache(&self.config.fallback_cache_path, &deduped_patterns) {
+            if !self
+                .config
+                .fallback_cache_path
+                .is_empty()
+            {
+                if let Err(e) = Self::save_to_cache(
+                    &self
+                        .config
+                        .fallback_cache_path,
+                    &deduped_patterns,
+                ) {
                     warn!(error = %e, "failed to persist regex patterns to fallback cache");
                 }
             }
@@ -222,17 +255,34 @@ impl RegexSyncService {
             Ok(())
         } else {
             // Remote sources failed or no URLs configured; fall back to disk cache
-            if !self.config.fallback_cache_path.is_empty() {
-                if let Some(cached_state) = Self::load_from_cache(&self.config.fallback_cache_path) {
-                    self.state.store(Arc::new(cached_state));
+            if !self
+                .config
+                .fallback_cache_path
+                .is_empty()
+            {
+                if let Some(cached_state) = Self::load_from_cache(
+                    &self
+                        .config
+                        .fallback_cache_path,
+                ) {
+                    self.state
+                        .store(Arc::new(cached_state));
                     return Ok(());
                 }
             }
 
-            if self.config.urls.is_empty() {
-                debug!("no remote regex URLs configured and no cache loaded; regex engine is idle");
+            if self
+                .config
+                .urls
+                .is_empty()
+            {
+                debug!(
+                    "no remote regex URLs configured and no cache loaded; regex engine is idle"
+                );
             } else {
-                warn!("all remote regex fetches failed and fallback cache was unavailable");
+                warn!(
+                    "all remote regex fetches failed and fallback cache was unavailable"
+                );
             }
             Ok(())
         }
@@ -262,8 +312,10 @@ impl RegexSyncService {
             .await
             .with_context(|| format!("failed to read response body from {url}"))?;
 
-        let payload: RemoteRegexPayload = serde_json::from_str(&body)
-            .with_context(|| format!("failed to deserialize remote regex payload from {url}"))?;
+        let payload: RemoteRegexPayload =
+            serde_json::from_str(&body).with_context(|| {
+                format!("failed to deserialize remote regex payload from {url}")
+            })?;
 
         Ok(payload.into_patterns())
     }
@@ -272,18 +324,32 @@ impl RegexSyncService {
     pub fn spawn_sync_worker(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             // Perform initial sync on startup
-            if let Err(e) = self.sync().await {
+            if let Err(e) = self
+                .sync()
+                .await
+            {
                 warn!(error = %e, "initial dynamic regex sync failed");
             }
 
-            let interval_secs = self.config.sync_interval_secs.max(1);
-            let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
-            interval.tick().await; // First tick completes immediately
+            let interval_secs = self
+                .config
+                .sync_interval_secs
+                .max(1);
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(interval_secs));
+            interval
+                .tick()
+                .await; // First tick completes immediately
 
             loop {
-                interval.tick().await;
+                interval
+                    .tick()
+                    .await;
                 debug!("running scheduled dynamic regex synchronization");
-                if let Err(e) = self.sync().await {
+                if let Err(e) = self
+                    .sync()
+                    .await
+                {
                     warn!(error = %e, "scheduled dynamic regex synchronization encountered an error");
                 }
             }
@@ -314,8 +380,12 @@ mod tests {
     #[test]
     fn test_cache_save_and_load_roundtrip() {
         let dir = tempdir().unwrap();
-        let cache_path = dir.path().join("test_regex_cache.json");
-        let path_str = cache_path.to_str().unwrap();
+        let cache_path = dir
+            .path()
+            .join("test_regex_cache.json");
+        let path_str = cache_path
+            .to_str()
+            .unwrap();
 
         let patterns = vec![
             "^valid_pattern_[0-9]+$".to_string(),
@@ -325,10 +395,16 @@ mod tests {
 
         RegexSyncService::save_to_cache(path_str, &patterns).unwrap();
 
-        let loaded = RegexSyncService::load_from_cache(path_str).expect("cache should load");
+        let loaded =
+            RegexSyncService::load_from_cache(path_str).expect("cache should load");
         assert_eq!(loaded.patterns(), &patterns);
         // The invalid pattern should be ignored safely without panic
-        assert_eq!(loaded.compiled().len(), 2);
+        assert_eq!(
+            loaded
+                .compiled()
+                .len(),
+            2
+        );
         assert!(loaded.is_match("valid_pattern_42"));
         assert!(loaded.is_match("another_valid_test"));
     }
@@ -337,11 +413,17 @@ mod tests {
     async fn test_sync_successful_fetch_and_cache() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
-        let cache_path = dir.path().join("cache.json");
-        let path_str = cache_path.to_str().unwrap().to_string();
+        let cache_path = dir
+            .path()
+            .join("cache.json");
+        let path_str = cache_path
+            .to_str()
+            .unwrap()
+            .to_string();
 
         let mock = server.mock(|when, then| {
-            when.method(GET).path("/rules.json");
+            when.method(GET)
+                .path("/rules.json");
             then.status(200)
                 .header("content-type", "application/json")
                 .body(r#"{"patterns": ["^live_.*", ".*\\.ts$"]}"#);
@@ -354,7 +436,10 @@ mod tests {
         };
 
         let (service, state) = RegexSyncService::new(config);
-        service.sync().await.unwrap();
+        service
+            .sync()
+            .await
+            .unwrap();
 
         mock.assert();
         let current = state.load();
@@ -370,15 +455,21 @@ mod tests {
     async fn test_sync_forbidden_403_falls_back_to_cache() {
         let server = MockServer::start();
         let dir = tempdir().unwrap();
-        let cache_path = dir.path().join("cache.json");
-        let path_str = cache_path.to_str().unwrap().to_string();
+        let cache_path = dir
+            .path()
+            .join("cache.json");
+        let path_str = cache_path
+            .to_str()
+            .unwrap()
+            .to_string();
 
         // Populate fallback cache with pre-existing rules
         let initial_patterns = vec!["^cached_rule_.*$".to_string()];
         RegexSyncService::save_to_cache(&path_str, &initial_patterns).unwrap();
 
         let mock = server.mock(|when, then| {
-            when.method(GET).path("/forbidden.json");
+            when.method(GET)
+                .path("/forbidden.json");
             then.status(403);
         });
 
@@ -389,7 +480,10 @@ mod tests {
         };
 
         let (service, state) = RegexSyncService::new(config);
-        service.sync().await.unwrap();
+        service
+            .sync()
+            .await
+            .unwrap();
 
         mock.assert();
         let current = state.load();
@@ -401,8 +495,13 @@ mod tests {
     #[tokio::test]
     async fn test_sync_unresolvable_url_falls_back_to_cache() {
         let dir = tempdir().unwrap();
-        let cache_path = dir.path().join("cache.json");
-        let path_str = cache_path.to_str().unwrap().to_string();
+        let cache_path = dir
+            .path()
+            .join("cache.json");
+        let path_str = cache_path
+            .to_str()
+            .unwrap()
+            .to_string();
 
         let initial_patterns = vec!["^fallback_regex.*".to_string()];
         RegexSyncService::save_to_cache(&path_str, &initial_patterns).unwrap();
@@ -414,7 +513,10 @@ mod tests {
         };
 
         let (service, state) = RegexSyncService::new(config);
-        service.sync().await.unwrap();
+        service
+            .sync()
+            .await
+            .unwrap();
 
         let current = state.load();
         assert!(current.is_match("fallback_regex_match"));

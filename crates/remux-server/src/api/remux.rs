@@ -661,7 +661,14 @@ pub async fn remux_meta(
     };
 
     match svc
-        .get_meta(media_type, id, session.device.remote_ip.as_deref())
+        .get_meta(
+            media_type,
+            id,
+            session
+                .device
+                .remote_ip
+                .as_deref(),
+        )
         .await
     {
         Ok(Some(meta)) => Ok(Json::<remux_sdks::stremio::Meta>(meta).into_response()),

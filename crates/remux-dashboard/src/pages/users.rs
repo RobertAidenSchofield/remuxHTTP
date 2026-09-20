@@ -5,8 +5,8 @@ use remux_sdks::remux::{
     FilterMatchMode, GetUserAddons, GetUserSimklConfiguration, GetUsers, ListAddons,
     PollUserSimklDeviceAuth, SetUserAddons, SimklDeviceAuthDto, SimklUserConfigDto,
     StartUserSimklDeviceAuth, StreamFilter, StreamRule, SubtitleMode,
-    TestUserSimklConnection, UpdateUser, UpdateUserConfiguration,
-    UpdateUserPolicy, UpdateUserSimklConfiguration, UserConfiguration, UserDto,
+    TestUserSimklConnection, UpdateUser, UpdateUserConfiguration, UpdateUserPolicy,
+    UpdateUserSimklConfiguration, UserConfiguration, UserDto,
 };
 use uuid::Uuid;
 
@@ -405,7 +405,10 @@ pub fn UserForm(
         };
         let c = simkl_client.clone();
         spawn(async move {
-            if let Ok(cfg) = c.execute(GetUserSimklConfiguration { user_id: uid }).await {
+            if let Ok(cfg) = c
+                .execute(GetUserSimklConfiguration { user_id: uid })
+                .await
+            {
                 simkl_enabled.set(cfg.enabled);
                 simkl_sync_cw.set(cfg.sync_continue_watching);
                 simkl_token.set(cfg.user_token);
@@ -421,12 +424,25 @@ pub fn UserForm(
                 return;
             };
             let c = client.clone();
-            let token_val = simkl_token.peek().trim().to_string();
+            let token_val = simkl_token
+                .peek()
+                .trim()
+                .to_string();
             simkl_testing.set(true);
             simkl_test_result.set(None);
             spawn(async move {
-                let token_opt = if token_val.is_empty() { None } else { Some(token_val) };
-                match c.execute(TestUserSimklConnection { user_id: uid, token: token_opt }).await {
+                let token_opt = if token_val.is_empty() {
+                    None
+                } else {
+                    Some(token_val)
+                };
+                match c
+                    .execute(TestUserSimklConnection {
+                        user_id: uid,
+                        token: token_opt,
+                    })
+                    .await
+                {
                     Ok(res) => simkl_test_result.set(Some((res.success, res.message))),
                     Err(e) => simkl_test_result.set(Some((false, e.user_message()))),
                 }
@@ -452,9 +468,14 @@ pub fn UserForm(
             simkl_pin_error.set(None);
             simkl_pin_info.set(None);
             spawn(async move {
-                match c.execute(StartUserSimklDeviceAuth { user_id: uid }).await {
+                match c
+                    .execute(StartUserSimklDeviceAuth { user_id: uid })
+                    .await
+                {
                     Ok(auth_info) => {
-                        let interval_secs = auth_info.interval.max(5);
+                        let interval_secs = auth_info
+                            .interval
+                            .max(5);
                         simkl_pin_info.set(Some(auth_info));
                         simkl_pin_loading.set(false);
                         simkl_polling_active.set(true);
@@ -462,12 +483,21 @@ pub fn UserForm(
                         let poll_client = c.clone();
                         spawn(async move {
                             while *simkl_polling_active.read() {
-                                gloo_timers::future::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                                gloo_timers::future::sleep(
+                                    std::time::Duration::from_secs(interval_secs),
+                                )
+                                .await;
                                 if !*simkl_polling_active.read() {
                                     break;
                                 }
-                                match poll_client.execute(PollUserSimklDeviceAuth { user_id: uid }).await {
-                                    Ok(res) => match res.status.as_str() {
+                                match poll_client
+                                    .execute(PollUserSimklDeviceAuth { user_id: uid })
+                                    .await
+                                {
+                                    Ok(res) => match res
+                                        .status
+                                        .as_str()
+                                    {
                                         "success" => {
                                             simkl_enabled.set(true);
                                             simkl_has_token.set(true);
@@ -475,7 +505,8 @@ pub fn UserForm(
                                             simkl_pin_info.set(None);
                                             simkl_test_result.set(Some((
                                                 true,
-                                                "Simkl account connected successfully!".to_string(),
+                                                "Simkl account connected successfully!"
+                                                    .to_string(),
                                             )));
                                             break;
                                         }
@@ -574,7 +605,10 @@ pub fn UserForm(
             .clone();
         let simkl_enabled_snapshot = *simkl_enabled.peek();
         let simkl_sync_cw_snapshot = *simkl_sync_cw.peek();
-        let simkl_token_snapshot = simkl_token.peek().trim().to_string();
+        let simkl_token_snapshot = simkl_token
+            .peek()
+            .trim()
+            .to_string();
 
         saving.set(true);
         err.set(None);

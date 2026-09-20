@@ -146,8 +146,12 @@ pub async fn report_playback_start(
             ..PlaybackContext::from_parts(&session, &data, playback.as_ref(), None)
         }));
     crate::services::SimklService::on_start(
-        state.ctx.clone(),
-        session.user.id,
+        state
+            .ctx
+            .clone(),
+        session
+            .user
+            .id,
         data.item_id,
         data.position_ticks,
         None,
@@ -229,16 +233,24 @@ pub async fn report_playback_progress(
                     )
                 }));
             crate::services::SimklService::on_pause(
-                state.ctx.clone(),
-                session.user.id,
+                state
+                    .ctx
+                    .clone(),
+                session
+                    .user
+                    .id,
                 data.item_id,
                 data.position_ticks,
                 None,
             );
         } else if was_paused && !data.is_paused {
             crate::services::SimklService::on_start(
-                state.ctx.clone(),
-                session.user.id,
+                state
+                    .ctx
+                    .clone(),
+                session
+                    .user
+                    .id,
                 data.item_id,
                 data.position_ticks,
                 None,
@@ -329,8 +341,12 @@ pub async fn report_playback_stopped(
                     ..pctx
                 }));
             crate::services::SimklService::on_stop(
-                state.ctx.clone(),
-                session.user.id,
+                state
+                    .ctx
+                    .clone(),
+                session
+                    .user
+                    .id,
                 item_id,
                 Some(position_ticks),
                 None,
@@ -371,8 +387,12 @@ pub async fn report_playback_stopped(
                 ..PlaybackContext::from_parts(&session, &data, None, None)
             }));
         crate::services::SimklService::on_stop(
-            state.ctx.clone(),
-            session.user.id,
+            state
+                .ctx
+                .clone(),
+            session
+                .user
+                .id,
             data.item_id,
             Some(position_ticks),
             None,
