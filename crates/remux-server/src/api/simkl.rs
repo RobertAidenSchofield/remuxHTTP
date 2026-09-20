@@ -1,7 +1,7 @@
 use axum::{
     Json,
-    extract::{Path, State},
-    response::IntoResponse,
+    extract::{Path, Query, State},
+    response::{Html, IntoResponse},
 };
 use axum_anyhow::ApiResult as Result;
 use http::StatusCode;
@@ -276,12 +276,18 @@ pub async fn test_user_simkl_connection(
     }
 }
 
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct SimklDeviceStartQuery {
+    pub redirect: Option<String>,
+}
+
 /// POST /api/users/:user_id/simkl/device/start: Start Device / PIN flow for user
 #[post("/api/users/{user_id}/simkl/device/start")]
 pub async fn start_user_simkl_device_auth(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path(user_id): Path<Uuid>,
+    Query(query): Query<SimklDeviceStartQuery>,
 ) -> Result<impl IntoResponse> {
     require_self_or_admin(user_id, &session)?;
     let global_cfg = db::Settings::get_simkl_config(
@@ -308,12 +314,22 @@ pub async fn start_user_simkl_device_auth(
     tracing::info!(
         %user_id,
         client_id_prefix = &global_cfg.client_id[..global_cfg.client_id.len().min(4)],
+        redirect = ?query.redirect,
         "[Simkl] Starting PIN authorization"
     );
 
-    let resp = SimklService::start_device_auth(&global_cfg.client_id, user_id)
-        .await
-        .map_err(|e| e.context_bad_request("simkl_device_auth_failed"))?;
+    let resp = SimklService::start_device_auth(
+        &global_cfg.client_id,
+        user_id,
+        query
+            .redirect
+            .as_deref(),
+    )
+    .await
+    .map_err(|e| {
+        let detail = format!("{e:#}");
+        e.context_bad_request(&detail)
+    })?;
     let dto = SimklDeviceAuthDto {
         user_code: resp.user_code,
         verification_uri: resp.verification_uri,
@@ -356,6 +372,114 @@ pub async fn poll_user_simkl_device_auth(
     let res =
         SimklService::poll_device_auth(&state.ctx, &global_cfg.client_id, user_id)
             .await
-            .map_err(|e| e.context_bad_request("simkl_device_poll_failed"))?;
+            .map_err(|e| {
+                let detail = format!("{e:#}");
+                e.context_bad_request(&detail)
+            })?;
     Ok(Json(res))
+}
+
+const SIMKL_AUTH_SUCCESS_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Simkl Authorization - Remux</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      background-color: #0f172a;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px;
+    }
+    .card {
+      background-color: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 16px;
+      padding: 40px 32px;
+      max-width: 440px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+    }
+    .icon {
+      font-size: 56px;
+      line-height: 1;
+      margin-bottom: 20px;
+    }
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin: 0 0 12px;
+      color: #f8fafc;
+    }
+    p {
+      font-size: 0.95rem;
+      line-height: 1.6;
+      color: #94a3b8;
+      margin: 0 0 28px;
+    }
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .btn {
+      display: inline-block;
+      background-color: #3b82f6;
+      color: #ffffff;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      border: none;
+      font-size: 0.95rem;
+      transition: background-color 0.15s ease-in-out;
+    }
+    .btn:hover {
+      background-color: #2563eb;
+    }
+    .btn-secondary {
+      background-color: transparent;
+      color: #94a3b8;
+      border: 1px solid #334155;
+    }
+    .btn-secondary:hover {
+      background-color: #334155;
+      color: #f8fafc;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">✅</div>
+    <h1>Authorization Successful</h1>
+    <p>Your Simkl account has been connected to Remux. You can safely close this window and return to your app.</p>
+    <div class="actions">
+      <button class="btn" onclick="window.close()">Close Window</button>
+      <a class="btn btn-secondary" href="/admin">Go to Dashboard</a>
+    </div>
+  </div>
+  <script>
+    if (window.opener) {
+      try {
+        window.opener.postMessage({ type: 'simkl_auth_complete' }, '*');
+      } catch (e) {}
+    }
+  </script>
+</body>
+</html>"#;
+
+/// GET /auth/simkl: Callback / landing page when Simkl redirects user after PIN authorization
+#[get("/auth/simkl")]
+pub async fn simkl_auth_redirect() -> impl IntoResponse {
+    Html(SIMKL_AUTH_SUCCESS_HTML)
 }

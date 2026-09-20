@@ -493,9 +493,18 @@ impl SimklService {
         client_id: &str,
         user_token: &str,
     ) -> Result<()> {
-        let url = format!(
-            "{SIMKL_API_BASE}/scrobble/{action}?client_id={client_id}&app-name=remux&app-version=1.0"
-        );
+        let client_id = client_id
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
+        let user_token = user_token
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
+
+        let url = format!("{SIMKL_API_BASE}/scrobble/{action}?client_id={client_id}");
         info!(
             action,
             client_id_prefix = &client_id[..client_id
@@ -535,9 +544,18 @@ impl SimklService {
 
     /// Test connection with Simkl API using `GET https://api.simkl.com/users/settings`.
     pub async fn test_connection(client_id: &str, user_token: &str) -> Result<String> {
-        let url = format!(
-            "{SIMKL_API_BASE}/users/settings?client_id={client_id}&app-name=remux&app-version=1.0"
-        );
+        let client_id = client_id
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
+        let user_token = user_token
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
+
+        let url = format!("{SIMKL_API_BASE}/users/settings?client_id={client_id}");
         info!(
             client_id_prefix = &client_id[..client_id
                 .len()
@@ -585,13 +603,34 @@ impl SimklService {
     pub async fn start_device_auth(
         client_id: &str,
         user_id: Uuid,
+        redirect_uri: Option<&str>,
     ) -> Result<SimklDeviceCodeResponse> {
-        let url = format!(
-            "{SIMKL_API_BASE}/oauth/pin?client_id={client_id}&app-name=remux&app-version=1.0"
-        );
+        let client_id = client_id
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
+
+        if client_id.is_empty() {
+            anyhow::bail!(
+                "Simkl Client ID is empty. Please configure your Client ID in Settings > Simkl."
+            );
+        }
+
+        let mut url = format!("{SIMKL_API_BASE}/oauth/pin?client_id={client_id}");
+        if let Some(redirect) = redirect_uri.filter(|r| {
+            !r.trim()
+                .is_empty()
+        }) {
+            url.push_str(&format!(
+                "&redirect={}",
+                urlencoding::encode(redirect.trim())
+            ));
+        }
         info!(
             %user_id,
             client_id_prefix = &client_id[..client_id.len().min(4)],
+            redirect = ?redirect_uri,
             "[Simkl] Requesting device PIN from Simkl"
         );
 
@@ -601,7 +640,7 @@ impl SimklService {
             .header("Accept", "application/json")
             .send()
             .await
-            .context("Failed to request device PIN from Simkl")?;
+            .context("Failed to connect to Simkl API")?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -610,6 +649,15 @@ impl SimklService {
                 .await
                 .unwrap_or_default();
             warn!(status = status.as_u16(), body = %body, "[Simkl] Device PIN request failed");
+
+            if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(&body) {
+                if let Some(msg) = err_json
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                {
+                    anyhow::bail!("Simkl API: {msg}");
+                }
+            }
             anyhow::bail!("Simkl device authorization failed ({status}): {body}");
         }
 
@@ -673,6 +721,12 @@ impl SimklService {
         client_id: &str,
         user_id: Uuid,
     ) -> Result<SimklPollResultDto> {
+        let client_id = client_id
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
+
         let pending = {
             let auths = PENDING_DEVICE_AUTHS
                 .lock()
@@ -723,7 +777,7 @@ impl SimklService {
         }
 
         let url = format!(
-            "{SIMKL_API_BASE}/oauth/pin/{}?client_id={client_id}&app-name=remux&app-version=1.0",
+            "{SIMKL_API_BASE}/oauth/pin/{}?client_id={client_id}",
             pending.user_code
         );
 
@@ -858,8 +912,19 @@ impl SimklService {
         client_id: &str,
         user_token: &str,
     ) -> Result<Vec<SimklPlaybackItem>> {
+        let client_id = client_id
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
+        let user_token = user_token
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
+
         let url = format!(
-            "{SIMKL_API_BASE}/sync/playback?hide_watched=true&client_id={client_id}&app-name=remux&app-version=1.0"
+            "{SIMKL_API_BASE}/sync/playback?hide_watched=true&client_id={client_id}"
         );
         info!(
             client_id_prefix = &client_id[..client_id
