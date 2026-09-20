@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use chrono::Datelike;
 use remux_sdks::remux::SimklPollResultDto;
 use remux_sdks::simkl::{
-    ScrobblePayload, SimklDeviceCodeResponse, SimklEpisode, SimklIds, SimklMovie, SimklShow,
-    SimklTokenErrorResponse, SimklTokenResponse, SimklUserSettings,
+    ScrobblePayload, SimklDeviceCodeResponse, SimklEpisode, SimklIds, SimklMovie,
+    SimklPlaybackItem, SimklShow, SimklTokenErrorResponse, SimklTokenResponse, SimklUserSettings,
 };
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -23,6 +23,11 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 });
 
 const SIMKL_API_BASE: &str = "https://api.simkl.com";
+
+static LAST_PLAYBACK_SYNC: LazyLock<Mutex<HashMap<Uuid, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const PLAYBACK_SYNC_COOLDOWN: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct PendingDeviceAuth {
@@ -627,6 +632,261 @@ impl SimklService {
             })
         }
     }
+
+    /// Fetch active playback sessions from Simkl API via `GET /sync/playback?hide_watched=true`.
+    pub async fn get_playback(
+        client_id: &str,
+        user_token: &str,
+    ) -> Result<Vec<SimklPlaybackItem>> {
+        let url = format!("{SIMKL_API_BASE}/sync/playback?hide_watched=true");
+        let resp = HTTP_CLIENT
+            .get(&url)
+            .header("simkl-api-key", client_id)
+            .header("Authorization", format!("Bearer {user_token}"))
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("failed to send request to Simkl Playback API")?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let items: Vec<SimklPlaybackItem> = resp
+                .json()
+                .await
+                .context("failed to parse Simkl playback items")?;
+            Ok(items)
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Simkl GET /sync/playback returned HTTP {status}: {body}");
+        }
+    }
+
+    /// Pull paused/in-progress playback sessions from Simkl and sync them to Remux's local user media state.
+    pub async fn sync_playback(ctx: &AppContext, user_id: Uuid) -> Result<()> {
+        let Ok((client_id, user_cfg)) = Self::get_credentials(ctx, &user_id).await else {
+            return Ok(());
+        };
+
+        if !user_cfg.enabled || !user_cfg.sync_continue_watching || user_cfg.user_token.is_empty() {
+            return Ok(());
+        }
+
+        // Check rate-limit cooldown
+        {
+            let mut sync_times = LAST_PLAYBACK_SYNC.lock().unwrap();
+            if let Some(last) = sync_times.get(&user_id) {
+                if last.elapsed() < PLAYBACK_SYNC_COOLDOWN {
+                    return Ok(());
+                }
+            }
+            sync_times.insert(user_id, Instant::now());
+        }
+
+        let user = match db::User::get_by_id(&ctx.db, &user_id).await? {
+            Some(u) => u,
+            None => return Ok(()),
+        };
+
+        let items = match Self::get_playback(&client_id, &user_cfg.user_token).await {
+            Ok(items) => items,
+            Err(e) => {
+                warn!(%user_id, error = %e, "[Simkl] Failed to fetch playback items for continue watching");
+                return Err(e);
+            }
+        };
+
+        if items.is_empty() {
+            return Ok(());
+        }
+
+        debug!(%user_id, count = items.len(), "[Simkl] Syncing continue watching items from playback");
+        for item in items {
+            if let Err(e) = Self::sync_single_playback_item(ctx, &user, &item).await {
+                debug!(error = %e, "[Simkl] Skipped playback item during sync");
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn sync_single_playback_item(
+        ctx: &AppContext,
+        user: &db::User,
+        item: &SimklPlaybackItem,
+    ) -> Result<()> {
+        let is_movie = item.item_type.as_deref() == Some("movie")
+            || (item.movie.is_some() && item.episode.is_none());
+
+        let media = if is_movie {
+            let movie = match &item.movie {
+                Some(m) => m,
+                None => anyhow::bail!("missing movie object in playback item"),
+            };
+            Self::find_or_resolve_movie(ctx, movie).await?
+        } else {
+            let show = match item.show.as_ref().or(item.anime.as_ref()) {
+                Some(s) => s,
+                None => anyhow::bail!("missing show object in playback item"),
+            };
+            let episode = match &item.episode {
+                Some(ep) => ep,
+                None => anyhow::bail!("missing episode object in playback item"),
+            };
+            Self::find_or_resolve_episode(ctx, show, episode).await?
+        };
+
+        let Some(media) = media else {
+            return Ok(());
+        };
+
+        let paused_at = item
+            .timestamp()
+            .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+            .map(|dt| dt.naive_utc())
+            .unwrap_or_else(|| chrono::Utc::now().naive_utc());
+
+        let mut state = db::UserMediaState::get_or_new(&ctx.db, user, &media).await?;
+
+        // If local state is newer, don't overwrite
+        if let Some(last_local) = state.last_played_at {
+            if last_local > paused_at {
+                return Ok(());
+            }
+        }
+
+        let runtime_ticks = media
+            .run_time_ticks
+            .unwrap_or_else(|| {
+                if media.kind == db::MediaKind::Movie {
+                    crate::common::minutes_to_ticks(120)
+                } else {
+                    crate::common::minutes_to_ticks(45)
+                }
+            });
+
+        let target_ticks = ((item.progress.clamp(0.0, 100.0) / 100.0) * runtime_ticks as f64) as i64;
+
+        state.playback_position = target_ticks;
+        state.last_played_at = Some(paused_at);
+        state.played_at = None;
+
+        state.save(&ctx.db).await?;
+        debug!(
+            %media.id,
+            title = %media.title,
+            progress = item.progress,
+            ticks = target_ticks,
+            "[Simkl] Synced continue watching position from Simkl"
+        );
+
+        Ok(())
+    }
+
+    async fn find_or_resolve_movie(
+        ctx: &AppContext,
+        movie: &SimklMovie,
+    ) -> Result<Option<db::Media>> {
+        let mut ext = db::ExternalIds::default();
+        if let Some(imdb) = &movie.ids.imdb {
+            ext.imdb = db::NonEmptyString::try_new(imdb.clone()).ok();
+        }
+        if let Some(tmdb) = &movie.ids.tmdb {
+            ext.tmdb = tmdb.parse::<i64>().ok();
+        }
+
+        if let Some(id) = db::Media::find_by_external_ids(&ctx.db, &db::MediaKind::Movie, &ext).await {
+            return Ok(db::Media::get_by_id(&ctx.db, &id).await?);
+        }
+
+        if let Some(imdb) = ext.imdb.as_ref() {
+            let custom_id = imdb.to_string();
+            let raw = db::MediaIdRaw {
+                kind: db::MediaKind::Movie,
+                external_ids: db::ExternalIds {
+                    imdb: Some(imdb.clone()),
+                    custom_stremio_id: Some(custom_id),
+                    tmdb: ext.tmdb,
+                    ..Default::default()
+                },
+                season: None,
+                episode: None,
+            };
+            let synth_id = Uuid::from(&raw);
+            if let Ok(Some(media)) = crate::services::MediaResolveService::resolve_item(synth_id, ctx).await {
+                return Ok(Some(media));
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn find_or_resolve_episode(
+        ctx: &AppContext,
+        show: &SimklShow,
+        episode: &SimklEpisode,
+    ) -> Result<Option<db::Media>> {
+        let mut ext = db::ExternalIds::default();
+        if let Some(imdb) = &show.ids.imdb {
+            ext.imdb = db::NonEmptyString::try_new(imdb.clone()).ok();
+        }
+        if let Some(tmdb) = &show.ids.tmdb {
+            ext.tmdb = tmdb.parse::<i64>().ok();
+        }
+        if let Some(tvdb) = &show.ids.tvdb {
+            ext.tvdb = tvdb.parse::<i64>().ok();
+        }
+
+        let series_id = match db::Media::find_by_external_ids(&ctx.db, &db::MediaKind::Series, &ext).await {
+            Some(id) => Some(id),
+            None => {
+                if let Some(imdb) = ext.imdb.as_ref() {
+                    let custom_id = imdb.to_string();
+                    let raw = db::MediaIdRaw {
+                        kind: db::MediaKind::Series,
+                        external_ids: db::ExternalIds {
+                            imdb: Some(imdb.clone()),
+                            custom_stremio_id: Some(custom_id),
+                            tmdb: ext.tmdb,
+                            tvdb: ext.tvdb,
+                            ..Default::default()
+                        },
+                        season: None,
+                        episode: None,
+                    };
+                    let synth_id = Uuid::from(&raw);
+                    if let Ok(Some(s)) = crate::services::MediaResolveService::resolve_item(synth_id, ctx).await {
+                        Some(s.id)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+
+        let Some(series_id) = series_id else {
+            return Ok(None);
+        };
+
+        let ep_row: Option<db::Media> = sqlx::query_as(
+            r#"
+            SELECT * FROM media
+            WHERE kind = 'Episode'
+              AND (grandparent_id = ?1 OR parent_id = ?1)
+              AND parent_idx = ?2
+              AND idx = ?3
+            LIMIT 1
+            "#,
+        )
+        .bind(series_id)
+        .bind(episode.season)
+        .bind(episode.number)
+        .fetch_optional(&ctx.db)
+        .await?;
+
+        Ok(ep_row)
+    }
 }
 
 #[cfg(test)]
@@ -646,5 +906,101 @@ mod tests {
 
         // Overflow clamping
         assert_eq!(SimklService::calculate_progress(1200, 1000), 100.0);
+    }
+
+    #[tokio::test]
+    async fn test_sync_single_playback_item_updates_state() {
+        let (_s, guard) = crate::integration_test::new_test_server().await.unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let movie = crate::integration_test::seed_movie(ctx).await;
+
+        let item = SimklPlaybackItem {
+            id: Some(123),
+            progress: 50.0,
+            paused_at: Some("2026-09-20T12:00:00Z".to_string()),
+            watched_at: None,
+            item_type: Some("movie".to_string()),
+            movie: Some(SimklMovie {
+                title: Some("Heat".to_string()),
+                year: Some(1995),
+                ids: SimklIds {
+                    imdb: Some("tt0113277".to_string()),
+                    tmdb: Some("949".to_string()),
+                    ..Default::default()
+                },
+            }),
+            show: None,
+            anime: None,
+            episode: None,
+        };
+
+        SimklService::sync_single_playback_item(ctx, &user, &item)
+            .await
+            .unwrap();
+
+        let state = db::UserMediaState::get_or_new(&ctx.db, &user, &movie)
+            .await
+            .unwrap();
+
+        assert!(state.playback_position > 0);
+        assert_eq!(state.played_at, None);
+        assert!(state.last_played_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_sync_single_playback_item_preserves_newer_local() {
+        let (_s, guard) = crate::integration_test::new_test_server().await.unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let movie = crate::integration_test::seed_movie(ctx).await;
+
+        let mut local_state = db::UserMediaState::get_or_new(&ctx.db, &user, &movie)
+            .await
+            .unwrap();
+        local_state.playback_position = 999_999;
+        local_state.last_played_at = Some(
+            chrono::DateTime::parse_from_rfc3339("2026-09-20T15:00:00Z")
+                .unwrap()
+                .naive_utc(),
+        );
+        local_state.save(&ctx.db).await.unwrap();
+
+        let item = SimklPlaybackItem {
+            id: Some(123),
+            progress: 25.0,
+            paused_at: Some("2026-09-20T12:00:00Z".to_string()),
+            watched_at: None,
+            item_type: Some("movie".to_string()),
+            movie: Some(SimklMovie {
+                title: Some("Heat".to_string()),
+                year: Some(1995),
+                ids: SimklIds {
+                    imdb: Some("tt0113277".to_string()),
+                    ..Default::default()
+                },
+            }),
+            show: None,
+            anime: None,
+            episode: None,
+        };
+
+        SimklService::sync_single_playback_item(ctx, &user, &item)
+            .await
+            .unwrap();
+
+        let state = db::UserMediaState::get_or_new(&ctx.db, &user, &movie)
+            .await
+            .unwrap();
+
+        assert_eq!(state.playback_position, 999_999);
     }
 }

@@ -21,7 +21,7 @@ use crate::{
     common::{get_uuid, server_id},
     db,
     db::{auth, user::User},
-    services::MediaResolveService,
+    services::{MediaResolveService, SimklService},
     signals::{
         Event, MarkFavoriteInfo, MarkPlayedInfo, MarkUnplayedInfo, RatingInfo,
         UnmarkFavoriteInfo, UserDeletedInfo, UserUpdatedInfo,
@@ -1627,6 +1627,11 @@ async fn resume_items(
     session: auth::AuthSession,
     mut q: api::GetItemsQuery,
 ) -> Result<impl IntoResponse> {
+    // If the user has Simkl continue watching sync enabled, pull the latest sessions
+    if let Err(e) = SimklService::sync_playback(&state.ctx, session.user.id).await {
+        tracing::debug!(user_id = %session.user.id, error = %e, "[Simkl] Continue watching sync skipped or failed");
+    }
+
     q.user_id = Some(
         session
             .user

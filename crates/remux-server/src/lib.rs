@@ -648,12 +648,28 @@ fn default_simkl_threshold() -> u32 {
     80
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+fn default_simkl_sync_continue_watching() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SimklUserConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub user_token: String,
+    #[serde(default = "default_simkl_sync_continue_watching")]
+    pub sync_continue_watching: bool,
+}
+
+impl Default for SimklUserConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            user_token: String::new(),
+            sync_continue_watching: true,
+        }
+    }
 }
 
 fn default_jellyfin_version() -> String {

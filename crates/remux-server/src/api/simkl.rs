@@ -80,6 +80,7 @@ pub async fn get_user_simkl_settings(
         enabled: user_cfg.enabled,
         user_token: mask_token(&user_cfg.user_token),
         has_token: !user_cfg.user_token.is_empty(),
+        sync_continue_watching: user_cfg.sync_continue_watching,
     };
     Ok(Json(dto))
 }
@@ -106,6 +107,7 @@ pub async fn update_user_simkl_settings(
     let user_config = crate::SimklUserConfig {
         enabled: payload.enabled,
         user_token: new_token,
+        sync_continue_watching: payload.sync_continue_watching,
     };
 
     db::Settings::set_user_simkl_config(

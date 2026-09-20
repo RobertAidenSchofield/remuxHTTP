@@ -6148,6 +6148,8 @@ pub struct SimklUserConfigDto {
     pub user_token: String,
     #[serde(default, alias = "hasToken")]
     pub has_token: bool,
+    #[serde(default = "default_true", alias = "syncContinueWatching")]
+    pub sync_continue_watching: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

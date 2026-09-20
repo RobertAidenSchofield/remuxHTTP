@@ -392,6 +392,7 @@ pub fn UserForm(
     });
 
     let mut simkl_enabled = use_signal(|| false);
+    let mut simkl_sync_cw = use_signal(|| true);
     let mut simkl_token = use_signal(String::new);
     let mut simkl_has_token = use_signal(|| false);
     let mut simkl_testing = use_signal(|| false);
@@ -406,6 +407,7 @@ pub fn UserForm(
         spawn(async move {
             if let Ok(cfg) = c.execute(GetUserSimklConfiguration { user_id: uid }).await {
                 simkl_enabled.set(cfg.enabled);
+                simkl_sync_cw.set(cfg.sync_continue_watching);
                 simkl_token.set(cfg.user_token);
                 simkl_has_token.set(cfg.has_token);
             }
@@ -571,6 +573,7 @@ pub fn UserForm(
             .peek()
             .clone();
         let simkl_enabled_snapshot = *simkl_enabled.peek();
+        let simkl_sync_cw_snapshot = *simkl_sync_cw.peek();
         let simkl_token_snapshot = simkl_token.peek().trim().to_string();
 
         saving.set(true);
@@ -683,6 +686,7 @@ pub fn UserForm(
                                 enabled: simkl_enabled_snapshot,
                                 user_token: simkl_token_snapshot,
                                 has_token: false,
+                                sync_continue_watching: simkl_sync_cw_snapshot,
                             },
                         })
                         .await?;
@@ -754,6 +758,7 @@ pub fn UserForm(
                                     enabled: simkl_enabled_snapshot,
                                     user_token: simkl_token_snapshot,
                                     has_token: false,
+                                    sync_continue_watching: simkl_sync_cw_snapshot,
                                 },
                             })
                             .await?;
@@ -1052,6 +1057,12 @@ pub fn UserForm(
                     description: "Automatically scrobble watched items and sync playback to Simkl for this user.",
                     checked: *simkl_enabled.read(),
                     on_change: move |v| simkl_enabled.set(v),
+                }
+                ToggleRow {
+                    label: "Sync Continue Watching from Simkl",
+                    description: "Import in-progress playback sessions from Simkl into this user's Continue Playing row.",
+                    checked: *simkl_sync_cw.read(),
+                    on_change: move |v| simkl_sync_cw.set(v),
                 }
                 if is_edit {
                     if let Some(pin) = simkl_pin_info.read().clone() {
