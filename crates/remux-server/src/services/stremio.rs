@@ -106,7 +106,8 @@ impl StremioService {
                 .should_cache(|response: &sdks::stremio::MetaResponse| {
                     (!response
                         .meta
-                        .is_error())
+                        .as_ref()
+                        .map_or(false, |m| m.is_error()))
                     .then_some(Duration::from_secs(3600))
                 }),
             )

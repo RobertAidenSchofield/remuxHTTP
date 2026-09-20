@@ -18,8 +18,8 @@ use axum::{
 use axum_anyhow::{ApiError, ApiResult, on_error, set_expose_errors};
 pub mod result_ext;
 use chrono::{Duration, Utc, prelude::*};
-pub mod config;
-pub use config::DynamicRegexConfig;
+pub mod config_ext;
+pub use config_ext::DynamicRegexConfig;
 use futures_util::StreamExt;
 use http::Uri;
 use itertools::Itertools;

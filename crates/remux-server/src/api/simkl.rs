@@ -177,7 +177,7 @@ pub async fn start_user_simkl_device_auth(
         db::Settings::get_simkl_config(&state.ctx.db, &state.ctx.config.simkl).await?;
     if global_cfg.client_id.is_empty() {
         return Err(anyhow::anyhow!("Simkl Client ID is not configured in Server Settings")
-            .context_client_error("missing_client_id"));
+            .context_bad_request("missing_client_id"));
     }
 
     let resp = SimklService::start_device_auth(&global_cfg.client_id, user_id).await?;
@@ -203,7 +203,7 @@ pub async fn poll_user_simkl_device_auth(
         db::Settings::get_simkl_config(&state.ctx.db, &state.ctx.config.simkl).await?;
     if global_cfg.client_id.is_empty() {
         return Err(anyhow::anyhow!("Simkl Client ID is not configured in Server Settings")
-            .context_client_error("missing_client_id"));
+            .context_bad_request("missing_client_id"));
     }
 
     let res = SimklService::poll_device_auth(&state.ctx, &global_cfg.client_id, user_id).await?;

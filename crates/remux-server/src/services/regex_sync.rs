@@ -11,7 +11,7 @@ use regex::Regex;
 use remux_utils::regex::compile_safe_regexes;
 use tracing::{debug, info, warn};
 
-use crate::config::{DynamicRegexConfig, RemoteRegexPayload};
+use crate::config_ext::{DynamicRegexConfig, RemoteRegexPayload};
 
 /// Represents the active compiled regex state.
 #[derive(Clone, Default)]
