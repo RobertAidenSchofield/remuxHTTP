@@ -514,26 +514,26 @@ impl From<api::DisplayPreferencesDto> for db::JellyfinDisplayPrefsData {
 impl TryFrom<stremio::Episode> for db::Media {
     type Error = anyhow::Error;
     fn try_from(meta: stremio::Episode) -> Result<db::Media> {
+        let idx = db::parse_stremio_episode(&meta);
+        let parent_idx = db::parse_stremio_season(&meta);
+        let title = meta.get_name().unwrap_or_default();
+        let released_at = meta.released.map(|x| x.naive_utc());
+        let runtime = meta.runtime.map(|d| d.num_seconds());
+        let description = meta.overview.or(meta.description);
+        let rating_audience = meta.rating;
+        let thumbnail = meta.thumbnail;
         let mut media = db::Media {
-            title: meta
-                .get_name()
-                .unwrap_or_default(),
+            title,
             kind: db::MediaKind::Episode,
-            released_at: meta
-                .released
-                .map(|x| x.naive_utc()),
-            runtime: meta
-                .runtime
-                .map(|d| d.num_seconds()),
-            description: meta
-                .overview
-                .or(meta.description),
-            rating_audience: meta.rating,
-            idx: db::parse_stremio_episode(&meta),
-            parent_idx: db::parse_stremio_season(&meta),
+            released_at,
+            runtime,
+            description,
+            rating_audience,
+            idx,
+            parent_idx,
             ..Default::default()
         };
-        if let Some(url) = meta.thumbnail {
+        if let Some(url) = thumbnail {
             media.set_image(db::ImageKind::Primary, url);
         }
         Ok(media)

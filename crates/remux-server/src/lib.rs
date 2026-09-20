@@ -757,6 +757,7 @@ impl Default for Config {
             activity_log_retention_days: default_activity_log_retention_days(),
             jellyfin_version: default_jellyfin_version(),
             dynamic_regex: DynamicRegexConfig::default(),
+            simkl: SimklConfig::default(),
         }
         .resolve()
     }
