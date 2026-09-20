@@ -139,6 +139,13 @@ pub async fn report_playback_start(
                 .unwrap_or(0),
             ..PlaybackContext::from_parts(&session, &data, playback.as_ref(), None)
         }));
+    crate::services::SimklService::on_start(
+        state.ctx.clone(),
+        session.user.id,
+        data.item_id,
+        data.position_ticks,
+        None,
+    );
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -215,6 +222,21 @@ pub async fn report_playback_progress(
                         Some(psid),
                     )
                 }));
+            crate::services::SimklService::on_pause(
+                state.ctx.clone(),
+                session.user.id,
+                data.item_id,
+                data.position_ticks,
+                None,
+            );
+        } else if was_paused && !data.is_paused {
+            crate::services::SimklService::on_start(
+                state.ctx.clone(),
+                session.user.id,
+                data.item_id,
+                data.position_ticks,
+                None,
+            );
         }
     }
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -300,6 +322,14 @@ pub async fn report_playback_stopped(
                     played,
                     ..pctx
                 }));
+            crate::services::SimklService::on_stop(
+                state.ctx.clone(),
+                session.user.id,
+                item_id,
+                Some(position_ticks),
+                None,
+                played,
+            );
         }
     } else if !data
         .item_id
@@ -334,6 +364,14 @@ pub async fn report_playback_stopped(
                 played,
                 ..PlaybackContext::from_parts(&session, &data, None, None)
             }));
+        crate::services::SimklService::on_stop(
+            state.ctx.clone(),
+            session.user.id,
+            data.item_id,
+            Some(position_ticks),
+            None,
+            played,
+        );
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }

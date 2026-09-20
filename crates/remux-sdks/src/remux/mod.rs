@@ -5931,6 +5931,117 @@ impl Endpoint for UpdateIntroConfiguration {
     }
 }
 
+fn default_simkl_threshold() -> u32 {
+    80
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SimklGlobalConfigDto {
+    #[serde(default, alias = "clientId")]
+    pub client_id: String,
+    #[serde(default = "default_simkl_threshold", alias = "completionThreshold")]
+    pub completion_threshold: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SimklUserConfigDto {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, alias = "userToken")]
+    pub user_token: String,
+    #[serde(default, alias = "hasToken")]
+    pub has_token: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SimklTestResultDto {
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetSimklConfiguration;
+
+impl Endpoint for GetSimklConfiguration {
+    type Output = SimklGlobalConfigDto;
+    fn path(&self) -> String {
+        "/api/settings/simkl".into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateSimklConfiguration {
+    pub config: SimklGlobalConfigDto,
+}
+
+impl Endpoint for UpdateSimklConfiguration {
+    type Output = ();
+    fn path(&self) -> String {
+        "/api/settings/simkl".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.config).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GetUserSimklConfiguration {
+    pub user_id: uuid::Uuid,
+}
+
+impl Endpoint for GetUserSimklConfiguration {
+    type Output = SimklUserConfigDto;
+    fn path(&self) -> String {
+        format!("/api/users/{}/simkl", self.user_id)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateUserSimklConfiguration {
+    pub user_id: uuid::Uuid,
+    pub config: SimklUserConfigDto,
+}
+
+impl Endpoint for UpdateUserSimklConfiguration {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/api/users/{}/simkl", self.user_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.config).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TestUserSimklConnection {
+    pub user_id: uuid::Uuid,
+    pub token: Option<String>,
+}
+
+impl Endpoint for TestUserSimklConnection {
+    type Output = SimklTestResultDto;
+    fn path(&self) -> String {
+        format!("/api/users/{}/simkl/test", self.user_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        let mut map = serde_json::Map::new();
+        if let Some(ref t) = self.token {
+            map.insert("userToken".into(), serde_json::Value::String(t.clone()));
+            map.insert("user_token".into(), serde_json::Value::String(t.clone()));
+        }
+        Body::Json(serde_json::Value::Object(map))
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GetStartupConfiguration;
 

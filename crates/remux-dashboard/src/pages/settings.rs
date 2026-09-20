@@ -6,9 +6,9 @@ use dioxus::prelude::*;
 use remux_sdks::remux::{
     CountryInfo, CultureDto, EmbeddedSubtitleHandling, EncodingOptions, GetCountries,
     GetCultures, GetEncodingConfiguration, GetIntroConfiguration,
-    GetSystemConfiguration, HardwareAccelerationType, IntroOptions, IntroOrder,
-    IntroTriggers, ServerConfiguration, StartTask, UpdateEncodingConfiguration,
-    UpdateIntroConfiguration, UpdateSystemConfiguration,
+    GetSimklConfiguration, GetSystemConfiguration, HardwareAccelerationType, IntroOptions, IntroOrder,
+    IntroTriggers, ServerConfiguration, SimklGlobalConfigDto, StartTask, UpdateEncodingConfiguration,
+    UpdateIntroConfiguration, UpdateSimklConfiguration, UpdateSystemConfiguration,
 };
 
 #[component]
@@ -1768,3 +1768,109 @@ pub fn RemuxdbSettingsCard(app_state: AppState) -> Element {
         }
     }
 }
+
+#[component]
+pub fn SimklSettingsCard(app_state: AppState) -> Element {
+    let mut client_id = use_signal(String::new);
+    let mut completion_threshold = use_signal(|| 80_u32);
+    let mut loading = use_signal(|| true);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(|| Option::<String>::None);
+    let mut saved = use_signal(|| false);
+
+    let app_state_load = app_state.clone();
+    use_effect(move || {
+        let client = app_state_load.clone();
+        spawn(async move {
+            match client.execute(GetSimklConfiguration).await {
+                Ok(cfg) => {
+                    client_id.set(cfg.client_id);
+                    completion_threshold.set(cfg.completion_threshold);
+                }
+                Err(e) => error.set(Some(format!("Failed to load Simkl settings: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    let on_submit = move |e: Event<FormData>| {
+        e.prevent_default();
+        let client = app_state.clone();
+        let updated = SimklGlobalConfigDto {
+            client_id: client_id.peek().trim().to_string(),
+            completion_threshold: *completion_threshold.peek(),
+        };
+        saving.set(true);
+        error.set(None);
+        saved.set(false);
+        spawn(async move {
+            match client.execute(UpdateSimklConfiguration { config: updated }).await {
+                Ok(_) => saved.set(true),
+                Err(e) => error.set(Some(e.user_message())),
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Card { title: "Simkl Scrobbling",
+            if *loading.read() {
+                LoadingText {}
+            } else {
+                form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
+                    p { style: "font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0",
+                        "Configure global Simkl integration for media scrobbling. Users can connect their personal Simkl access token from their profile settings to automatically sync playback."
+                    }
+                    div { class: "field",
+                        label { class: "field-label", r#for: "simkl-client-id", "Simkl Client ID" }
+                        input {
+                            id: "simkl-client-id",
+                            r#type: "text",
+                            class: "field-input",
+                            placeholder: "Enter your Simkl API Client ID",
+                            value: "{client_id}",
+                            oninput: move |e| client_id.set(e.value()),
+                        }
+                        p { class: "field-hint",
+                            "Your application's Client ID created on simkl.com/settings/developer."
+                        }
+                    }
+                    div { class: "field",
+                        label { class: "field-label", r#for: "simkl-threshold", "Completion Threshold (%)" }
+                        input {
+                            id: "simkl-threshold",
+                            r#type: "number",
+                            class: "field-input",
+                            min: "1",
+                            max: "100",
+                            value: "{completion_threshold}",
+                            oninput: move |e| {
+                                if let Ok(n) = e.value().parse::<u32>() {
+                                    completion_threshold.set(n);
+                                }
+                            },
+                        }
+                        p { class: "field-hint",
+                            "Percentage of runtime watched before a playback session is marked as completed/watched on Simkl (default: 80%)."
+                        }
+                    }
+                    if let Some(err) = error.read().as_ref() {
+                        ErrorAlert { message: err.clone() }
+                    }
+                    if *saved.read() {
+                        SuccessAlert { message: "Simkl settings saved.".to_string() }
+                    }
+                    div { class: "form-actions",
+                        button {
+                            r#type: "submit",
+                            class: "btn btn-primary",
+                            disabled: *saving.read(),
+                            if *saving.read() { "Saving…" } else { "Save Settings" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

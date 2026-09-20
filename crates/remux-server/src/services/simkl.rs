@@ -1,0 +1,467 @@
+use std::sync::LazyLock;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use chrono::Datelike;
+use remux_sdks::simkl::{
+    ScrobblePayload, SimklEpisode, SimklIds, SimklMovie, SimklShow, SimklUserSettings,
+};
+use tracing::{debug, warn};
+use uuid::Uuid;
+
+use crate::{AppContext, db};
+
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .user_agent("remux-server/1.0")
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+});
+
+const SIMKL_API_BASE: &str = "https://api.simkl.com";
+
+pub struct SimklService;
+
+pub enum ResolvedMedia {
+    Movie {
+        media: db::Media,
+        movie: SimklMovie,
+    },
+    Episode {
+        media: db::Media,
+        show: SimklShow,
+        episode: SimklEpisode,
+    },
+}
+
+impl ResolvedMedia {
+    pub fn media(&self) -> &db::Media {
+        match self {
+            Self::Movie { media, .. } => media,
+            Self::Episode { media, .. } => media,
+        }
+    }
+
+    pub fn to_payload(&self, progress: f64) -> ScrobblePayload {
+        match self {
+            Self::Movie { movie, .. } => ScrobblePayload {
+                movie: Some(movie.clone()),
+                show: None,
+                episode: None,
+                progress: Some(progress),
+            },
+            Self::Episode { show, episode, .. } => ScrobblePayload {
+                movie: None,
+                show: Some(show.clone()),
+                episode: Some(episode.clone()),
+                progress: Some(progress),
+            },
+        }
+    }
+}
+
+impl SimklService {
+    /// Calculate playback progress percentage based on ticks:
+    /// `Progress = min(100.0, max(0.0, (PositionTicks / RunTimeTicks) * 100.0))`
+    pub fn calculate_progress(position_ticks: i64, run_time_ticks: i64) -> f64 {
+        if run_time_ticks <= 0 || position_ticks <= 0 {
+            return 0.0;
+        }
+        ((position_ticks as f64 / run_time_ticks as f64) * 100.0).clamp(0.0, 100.0)
+    }
+
+    /// Resolve `db::Media` by ID into Simkl identifiers.
+    ///
+    /// - Movies: Require `imdb` or `tmdb`.
+    /// - Episodes: Require series `imdb`, `tvdb`, or `tmdb`, plus episode `season` and `number`.
+    pub async fn resolve_media(ctx: &AppContext, item_id: &Uuid) -> Result<Option<ResolvedMedia>> {
+        let Some(media) = db::Media::get_by_id(&ctx.db, item_id).await? else {
+            return Ok(None);
+        };
+
+        match media.kind {
+            db::MediaKind::Movie => {
+                let imdb = media
+                    .external_ids
+                    .imdb
+                    .as_ref()
+                    .map(|s| s.to_string());
+                let tmdb = media
+                    .external_ids
+                    .tmdb
+                    .map(|id| id.to_string());
+
+                if imdb.is_none() && tmdb.is_none() {
+                    debug!(
+                        title = %media.title,
+                        "Simkl: skipping movie without IMDb or TMDB ID"
+                    );
+                    return Ok(None);
+                }
+
+                let movie = SimklMovie {
+                    title: Some(media.title.clone()),
+                    year: media
+                        .released_at
+                        .map(|d| d.year()),
+                    ids: SimklIds {
+                        imdb,
+                        tmdb,
+                        ..Default::default()
+                    },
+                };
+
+                Ok(Some(ResolvedMedia::Movie { media, movie }))
+            }
+            db::MediaKind::Episode => {
+                let episode_idx = match media.idx {
+                    Some(idx) => idx,
+                    None => {
+                        debug!(
+                            title = %media.title,
+                            "Simkl: skipping episode without episode index"
+                        );
+                        return Ok(None);
+                    }
+                };
+
+                let season_idx = media
+                    .parent_idx
+                    .unwrap_or(1);
+
+                // Find series ancestor
+                let ancestors = db::Media::get_ancestors(&ctx.db, &media.id)
+                    .await
+                    .unwrap_or_default();
+                let series = if let Some(series) = ancestors
+                    .into_iter()
+                    .find(|m| m.kind == db::MediaKind::Series)
+                {
+                    Some(series)
+                } else if let Some(gid) = media.grandparent_id {
+                    db::Media::get_by_id(&ctx.db, &gid)
+                        .await
+                        .ok()
+                        .flatten()
+                        .filter(|m| m.kind == db::MediaKind::Series)
+                } else {
+                    None
+                };
+
+                let Some(series) = series else {
+                    debug!(
+                        title = %media.title,
+                        "Simkl: skipping episode without parent series"
+                    );
+                    return Ok(None);
+                };
+
+                let imdb = series
+                    .external_ids
+                    .imdb
+                    .as_ref()
+                    .map(|s| s.to_string());
+                let tvdb = series
+                    .external_ids
+                    .tvdb
+                    .map(|id| id.to_string());
+                let tmdb = series
+                    .external_ids
+                    .tmdb
+                    .map(|id| id.to_string());
+
+                if imdb.is_none() && tvdb.is_none() && tmdb.is_none() {
+                    debug!(
+                        series_title = %series.title,
+                        "Simkl: skipping episode series without IMDb, TVDB, or TMDB ID"
+                    );
+                    return Ok(None);
+                }
+
+                let show = SimklShow {
+                    title: Some(series.title.clone()),
+                    year: series
+                        .released_at
+                        .map(|d| d.year()),
+                    ids: SimklIds {
+                        imdb,
+                        tvdb,
+                        tmdb,
+                        ..Default::default()
+                    },
+                };
+
+                let episode = SimklEpisode {
+                    season: season_idx,
+                    number: episode_idx,
+                    ids: None,
+                };
+
+                Ok(Some(ResolvedMedia::Episode {
+                    media,
+                    show,
+                    episode,
+                }))
+            }
+            _ => {
+                debug!(kind = ?media.kind, "Simkl: skipping unsupported media kind");
+                Ok(None)
+            }
+        }
+    }
+
+    /// Trigger playback start scrobble asynchronously.
+    pub fn on_start(
+        ctx: AppContext,
+        user_id: Uuid,
+        item_id: Uuid,
+        position_ticks: Option<i64>,
+        run_time_ticks: Option<i64>,
+    ) {
+        tokio::spawn(async move {
+            if let Err(e) =
+                Self::handle_start(&ctx, user_id, item_id, position_ticks, run_time_ticks).await
+            {
+                warn!("[Simkl] Scrobble error on start: {e}");
+            }
+        });
+    }
+
+    /// Trigger playback pause scrobble asynchronously.
+    pub fn on_pause(
+        ctx: AppContext,
+        user_id: Uuid,
+        item_id: Uuid,
+        position_ticks: Option<i64>,
+        run_time_ticks: Option<i64>,
+    ) {
+        tokio::spawn(async move {
+            if let Err(e) =
+                Self::handle_pause(&ctx, user_id, item_id, position_ticks, run_time_ticks).await
+            {
+                warn!("[Simkl] Scrobble error on pause: {e}");
+            }
+        });
+    }
+
+    /// Trigger playback stop scrobble asynchronously.
+    pub fn on_stop(
+        ctx: AppContext,
+        user_id: Uuid,
+        item_id: Uuid,
+        position_ticks: Option<i64>,
+        run_time_ticks: Option<i64>,
+        played: bool,
+    ) {
+        tokio::spawn(async move {
+            if let Err(e) =
+                Self::handle_stop(&ctx, user_id, item_id, position_ticks, run_time_ticks, played)
+                    .await
+            {
+                warn!("[Simkl] Scrobble error on stop: {e}");
+            }
+        });
+    }
+
+    async fn handle_start(
+        ctx: &AppContext,
+        user_id: Uuid,
+        item_id: Uuid,
+        position_ticks: Option<i64>,
+        run_time_ticks: Option<i64>,
+    ) -> Result<()> {
+        let (client_id, user_cfg) = Self::get_credentials(ctx, &user_id).await?;
+        if client_id.is_empty() || !user_cfg.enabled || user_cfg.user_token.is_empty() {
+            return Ok(());
+        }
+
+        let Some(resolved) = Self::resolve_media(ctx, &item_id).await? else {
+            return Ok(());
+        };
+
+        let runtime = run_time_ticks
+            .or_else(|| {
+                resolved
+                    .media()
+                    .runtime
+                    .map(|s| s * 10_000_000)
+            })
+            .unwrap_or(0);
+        let pos = position_ticks.unwrap_or(0);
+        let progress = Self::calculate_progress(pos, runtime);
+
+        let payload = resolved.to_payload(progress);
+        Self::send_scrobble_request("start", &payload, &client_id, &user_cfg.user_token).await
+    }
+
+    async fn handle_pause(
+        ctx: &AppContext,
+        user_id: Uuid,
+        item_id: Uuid,
+        position_ticks: Option<i64>,
+        run_time_ticks: Option<i64>,
+    ) -> Result<()> {
+        let (client_id, user_cfg) = Self::get_credentials(ctx, &user_id).await?;
+        if client_id.is_empty() || !user_cfg.enabled || user_cfg.user_token.is_empty() {
+            return Ok(());
+        }
+
+        let Some(resolved) = Self::resolve_media(ctx, &item_id).await? else {
+            return Ok(());
+        };
+
+        let runtime = run_time_ticks
+            .or_else(|| {
+                resolved
+                    .media()
+                    .runtime
+                    .map(|s| s * 10_000_000)
+            })
+            .unwrap_or(0);
+        let pos = position_ticks.unwrap_or(0);
+        let progress = Self::calculate_progress(pos, runtime);
+
+        let payload = resolved.to_payload(progress);
+        Self::send_scrobble_request("pause", &payload, &client_id, &user_cfg.user_token).await
+    }
+
+    async fn handle_stop(
+        ctx: &AppContext,
+        user_id: Uuid,
+        item_id: Uuid,
+        position_ticks: Option<i64>,
+        run_time_ticks: Option<i64>,
+        played: bool,
+    ) -> Result<()> {
+        let (client_id, user_cfg) = Self::get_credentials(ctx, &user_id).await?;
+        if client_id.is_empty() || !user_cfg.enabled || user_cfg.user_token.is_empty() {
+            return Ok(());
+        }
+
+        let Some(resolved) = Self::resolve_media(ctx, &item_id).await? else {
+            return Ok(());
+        };
+
+        let runtime = run_time_ticks
+            .or_else(|| {
+                resolved
+                    .media()
+                    .runtime
+                    .map(|s| s * 10_000_000)
+            })
+            .unwrap_or(0);
+        let pos = position_ticks.unwrap_or(0);
+        let mut progress = Self::calculate_progress(pos, runtime);
+
+        let simkl_cfg = db::Settings::get_simkl_config(&ctx.db, &ctx.config.simkl).await?;
+        let threshold = simkl_cfg
+            .completion_threshold
+            .max(1) as f64;
+
+        if played || progress >= threshold {
+            // Register as completed watch
+            progress = progress.max(threshold);
+        }
+
+        let payload = resolved.to_payload(progress);
+        Self::send_scrobble_request("stop", &payload, &client_id, &user_cfg.user_token).await
+    }
+
+    async fn get_credentials(
+        ctx: &AppContext,
+        user_id: &Uuid,
+    ) -> Result<(String, crate::SimklUserConfig)> {
+        let simkl_cfg = db::Settings::get_simkl_config(&ctx.db, &ctx.config.simkl).await?;
+        let user_cfg =
+            db::Settings::get_user_simkl_config(&ctx.db, &ctx.config.simkl, user_id).await?;
+        Ok((simkl_cfg.client_id, user_cfg))
+    }
+
+    async fn send_scrobble_request(
+        action: &str,
+        payload: &ScrobblePayload,
+        client_id: &str,
+        user_token: &str,
+    ) -> Result<()> {
+        let url = format!("{SIMKL_API_BASE}/scrobble/{action}");
+        let resp = HTTP_CLIENT
+            .post(&url)
+            .header("simkl-api-key", client_id)
+            .header("Authorization", format!("Bearer {user_token}"))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .json(payload)
+            .send()
+            .await
+            .context("failed to send request to Simkl API")?;
+
+        let status = resp.status();
+        // 200/201 is success, 409 is soft-success (already scrobbled recently)
+        if status.is_success() || status.as_u16() == 409 {
+            debug!(action, status = status.as_u16(), "Simkl scrobble successful");
+            Ok(())
+        } else {
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_default();
+            anyhow::bail!("Simkl scrobble {action} returned HTTP {status}: {body}");
+        }
+    }
+
+    /// Test connection with Simkl API using `GET https://api.simkl.com/users/settings`.
+    pub async fn test_connection(client_id: &str, user_token: &str) -> Result<String> {
+        let url = format!("{SIMKL_API_BASE}/users/settings");
+        let resp = HTTP_CLIENT
+            .get(&url)
+            .header("simkl-api-key", client_id)
+            .header("Authorization", format!("Bearer {user_token}"))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("Failed to reach Simkl API")?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let settings: SimklUserSettings = resp
+                .json()
+                .await
+                .context("Failed to parse Simkl user settings")?;
+            let username = settings
+                .user
+                .and_then(|u| u.name)
+                .unwrap_or_else(|| "User".to_string());
+            Ok(format!("Connected successfully as {username}"))
+        } else if status.as_u16() == 401 {
+            anyhow::bail!("Unauthorized: Invalid Simkl access token")
+        } else {
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_default();
+            anyhow::bail!("Simkl API returned HTTP {status}: {body}")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_progress() {
+        // Zero or negative
+        assert_eq!(SimklService::calculate_progress(0, 100), 0.0);
+        assert_eq!(SimklService::calculate_progress(-10, 100), 0.0);
+        assert_eq!(SimklService::calculate_progress(50, 0), 0.0);
+
+        // Normal percentages
+        assert_eq!(SimklService::calculate_progress(50, 100), 50.0);
+        assert_eq!(SimklService::calculate_progress(800, 1000), 80.0);
+
+        // Overflow clamping
+        assert_eq!(SimklService::calculate_progress(1200, 1000), 100.0);
+    }
+}

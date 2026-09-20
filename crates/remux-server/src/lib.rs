@@ -598,6 +598,30 @@ pub struct Config {
     pub jellyfin_version: String,
     #[serde(default)]
     pub dynamic_regex: DynamicRegexConfig,
+    #[serde(default)]
+    pub simkl: SimklConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SimklConfig {
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default = "default_simkl_threshold")]
+    pub completion_threshold: u32,
+    #[serde(default)]
+    pub users: std::collections::HashMap<String, SimklUserConfig>,
+}
+
+fn default_simkl_threshold() -> u32 {
+    80
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SimklUserConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub user_token: String,
 }
 
 fn default_jellyfin_version() -> String {

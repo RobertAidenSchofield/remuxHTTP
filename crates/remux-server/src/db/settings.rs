@@ -8,6 +8,7 @@ use remux_sdks::remux::IntroOptions;
 const SERVER_CONFIG_KEY: &str = "server_configuration";
 const ENCODING_CONFIG_KEY: &str = "encoding_configuration";
 const INTRO_CONFIG_KEY: &str = "intro_configuration";
+const SIMKL_CONFIG_KEY: &str = "simkl_configuration";
 
 pub struct Settings;
 
@@ -62,6 +63,63 @@ impl Settings {
     pub async fn set_intro_config(db: &SqlitePool, opts: &IntroOptions) -> Result<()> {
         let json = serde_json::to_string(opts)?;
         Self::set(db, INTRO_CONFIG_KEY, &json).await
+    }
+
+    pub async fn get_simkl_config(
+        db: &SqlitePool,
+        base_config: &crate::SimklConfig,
+    ) -> Result<crate::SimklConfig> {
+        let mut cfg = base_config.clone();
+        if let Some(json) = Self::get(db, SIMKL_CONFIG_KEY).await? {
+            if let Ok(db_cfg) = serde_json::from_str::<crate::SimklConfig>(&json) {
+                if !db_cfg.client_id.is_empty() {
+                    cfg.client_id = db_cfg.client_id;
+                }
+                if db_cfg.completion_threshold > 0 {
+                    cfg.completion_threshold = db_cfg.completion_threshold;
+                }
+                for (uid, user_cfg) in db_cfg.users {
+                    cfg.users.insert(uid, user_cfg);
+                }
+            }
+        }
+        Ok(cfg)
+    }
+
+    pub async fn set_simkl_config(
+        db: &SqlitePool,
+        cfg: &crate::SimklConfig,
+    ) -> Result<()> {
+        let json = serde_json::to_string(cfg)?;
+        Self::set(db, SIMKL_CONFIG_KEY, &json).await
+    }
+
+    pub async fn get_user_simkl_config(
+        db: &SqlitePool,
+        base_config: &crate::SimklConfig,
+        user_id: &Uuid,
+    ) -> Result<crate::SimklUserConfig> {
+        let full_cfg = Self::get_simkl_config(db, base_config).await?;
+        let key = user_id.to_string();
+        let simple_key = user_id.simple().to_string();
+        Ok(full_cfg
+            .users
+            .get(&key)
+            .or_else(|| full_cfg.users.get(&simple_key))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub async fn set_user_simkl_config(
+        db: &SqlitePool,
+        base_config: &crate::SimklConfig,
+        user_id: &Uuid,
+        user_config: crate::SimklUserConfig,
+    ) -> Result<()> {
+        let mut full_cfg = Self::get_simkl_config(db, base_config).await?;
+        let key = user_id.to_string();
+        full_cfg.users.insert(key, user_config);
+        Self::set_simkl_config(db, &full_cfg).await
     }
 
     pub async fn init_server_id(db: &SqlitePool) -> Result<()> {

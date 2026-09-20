@@ -2,9 +2,10 @@ use crate::{components::*, pages::streams::StreamFilterEditor, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
     AddonDto, AdminSetPassword, CollectionFilter, CreateUser, DeleteUser, FilterGroup,
-    FilterMatchMode, GetUserAddons, GetUsers, ListAddons, SetUserAddons, StreamFilter,
-    StreamRule, SubtitleMode, UpdateUser, UpdateUserConfiguration, UpdateUserPolicy,
-    UserConfiguration, UserDto,
+    FilterMatchMode, GetUserAddons, GetUserSimklConfiguration, GetUsers, ListAddons,
+    SetUserAddons, SimklUserConfigDto, StreamFilter, StreamRule, SubtitleMode,
+    TestUserSimklConnection, UpdateUser, UpdateUserConfiguration,
+    UpdateUserPolicy, UpdateUserSimklConfiguration, UserConfiguration, UserDto,
 };
 use uuid::Uuid;
 
@@ -389,6 +390,48 @@ pub fn UserForm(
         });
     });
 
+    let mut simkl_enabled = use_signal(|| false);
+    let mut simkl_token = use_signal(String::new);
+    let mut simkl_has_token = use_signal(|| false);
+    let mut simkl_testing = use_signal(|| false);
+    let mut simkl_test_result = use_signal(|| Option::<(bool, String)>::None);
+
+    let simkl_client = app_state.clone();
+    use_effect(move || {
+        let Some(uid) = edit_user_id else {
+            return;
+        };
+        let c = simkl_client.clone();
+        spawn(async move {
+            if let Ok(cfg) = c.execute(GetUserSimklConfiguration { user_id: uid }).await {
+                simkl_enabled.set(cfg.enabled);
+                simkl_token.set(cfg.user_token);
+                simkl_has_token.set(cfg.has_token);
+            }
+        });
+    });
+
+    let on_test_simkl = {
+        let client = app_state.clone();
+        move |_| {
+            let Some(uid) = edit_user_id else {
+                return;
+            };
+            let c = client.clone();
+            let token_val = simkl_token.peek().trim().to_string();
+            simkl_testing.set(true);
+            simkl_test_result.set(None);
+            spawn(async move {
+                let token_opt = if token_val.is_empty() { None } else { Some(token_val) };
+                match c.execute(TestUserSimklConnection { user_id: uid, token: token_opt }).await {
+                    Ok(res) => simkl_test_result.set(Some((res.success, res.message))),
+                    Err(e) => simkl_test_result.set(Some((false, e.user_message()))),
+                }
+                simkl_testing.set(false);
+            });
+        }
+    };
+
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let pw = password
@@ -445,6 +488,8 @@ pub fn UserForm(
         let subtitle_language_snapshot = subtitle_language
             .peek()
             .clone();
+        let simkl_enabled_snapshot = *simkl_enabled.peek();
+        let simkl_token_snapshot = simkl_token.peek().trim().to_string();
 
         saving.set(true);
         err.set(None);
@@ -549,6 +594,16 @@ pub fn UserForm(
                             config: cfg,
                         })
                         .await?;
+                    client
+                        .execute(UpdateUserSimklConfiguration {
+                            user_id: user.id,
+                            config: SimklUserConfigDto {
+                                enabled: simkl_enabled_snapshot,
+                                user_token: simkl_token_snapshot,
+                                has_token: false,
+                            },
+                        })
+                        .await?;
                 } else {
                     // Create user
                     let new_user = client
@@ -606,6 +661,18 @@ pub fn UserForm(
                             .execute(UpdateUserConfiguration {
                                 user_id: new_user.id,
                                 config: cfg,
+                            })
+                            .await?;
+                    }
+                    if simkl_enabled_snapshot || !simkl_token_snapshot.is_empty() {
+                        client
+                            .execute(UpdateUserSimklConfiguration {
+                                user_id: new_user.id,
+                                config: SimklUserConfigDto {
+                                    enabled: simkl_enabled_snapshot,
+                                    user_token: simkl_token_snapshot,
+                                    has_token: false,
+                                },
                             })
                             .await?;
                     }
@@ -894,6 +961,47 @@ pub fn UserForm(
                     oninput: move |e| subtitle_language.set(e.value()),
                 }
                 span { class: "field-hint", "ISO 639-2 language code. Leave blank to use server default." }
+            }
+
+            div { style: "display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid var(--border, #333);border-radius:6px;margin-top:6px",
+                label { class: "field-label", style: "margin:0;font-weight:600", "Simkl Scrobbling" }
+                ToggleRow {
+                    label: "Enable Simkl Scrobbling",
+                    description: "Automatically scrobble watched items and sync playback to Simkl for this user.",
+                    checked: *simkl_enabled.read(),
+                    on_change: move |v| simkl_enabled.set(v),
+                }
+                div { class: "field",
+                    label { class: "field-label", r#for: "u-simkl-token", "User Access Token" }
+                    input {
+                        id: "u-simkl-token",
+                        r#type: "password",
+                        class: "field-input",
+                        placeholder: if *simkl_has_token.read() { "Token configured (leave blank to keep)" } else { "Simkl OAuth access token" },
+                        value: "{simkl_token}",
+                        oninput: move |e| simkl_token.set(e.value()),
+                    }
+                    span { class: "field-hint",
+                        "Personal access token generated on Simkl. Used to scrobble playback."
+                    }
+                }
+                if is_edit {
+                    div { style: "display:flex;align-items:center;gap:10px",
+                        button {
+                            r#type: "button",
+                            class: "btn btn-ghost",
+                            disabled: *simkl_testing.read(),
+                            onclick: on_test_simkl,
+                            if *simkl_testing.read() { "Testing…" } else { "Test Connection" }
+                        }
+                        if let Some((success, msg)) = simkl_test_result.read().as_ref() {
+                            span {
+                                style: if *success { "color:var(--color-success, #22c55e);font-size:0.85rem" } else { "color:var(--color-danger, #ef4444);font-size:0.85rem" },
+                                "{msg}"
+                            }
+                        }
+                    }
+                }
             }
 
             FilterRuleEditor {
