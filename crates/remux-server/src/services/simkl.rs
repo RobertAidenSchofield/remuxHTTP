@@ -406,7 +406,7 @@ impl SimklService {
         client_id: &str,
         user_token: &str,
     ) -> Result<()> {
-        let url = format!("{SIMKL_API_BASE}/scrobble/{action}");
+        let url = format!("{SIMKL_API_BASE}/scrobble/{action}?client_id={client_id}&app-name=remux&app-version=1.0");
         let resp = HTTP_CLIENT
             .post(&url)
             .header("simkl-api-key", client_id)
@@ -434,7 +434,7 @@ impl SimklService {
 
     /// Test connection with Simkl API using `GET https://api.simkl.com/users/settings`.
     pub async fn test_connection(client_id: &str, user_token: &str) -> Result<String> {
-        let url = format!("{SIMKL_API_BASE}/users/settings");
+        let url = format!("{SIMKL_API_BASE}/users/settings?client_id={client_id}&app-name=remux&app-version=1.0");
         let resp = HTTP_CLIENT
             .get(&url)
             .header("simkl-api-key", client_id)
@@ -638,7 +638,7 @@ impl SimklService {
         client_id: &str,
         user_token: &str,
     ) -> Result<Vec<SimklPlaybackItem>> {
-        let url = format!("{SIMKL_API_BASE}/sync/playback?hide_watched=true");
+        let url = format!("{SIMKL_API_BASE}/sync/playback?hide_watched=true&client_id={client_id}&app-name=remux&app-version=1.0");
         let resp = HTTP_CLIENT
             .get(&url)
             .header("simkl-api-key", client_id)
@@ -667,7 +667,11 @@ impl SimklService {
             return Ok(());
         };
 
-        if !user_cfg.enabled || !user_cfg.sync_continue_watching || user_cfg.user_token.is_empty() {
+        if client_id.is_empty()
+            || !user_cfg.enabled
+            || !user_cfg.sync_continue_watching
+            || user_cfg.user_token.is_empty()
+        {
             return Ok(());
         }
 

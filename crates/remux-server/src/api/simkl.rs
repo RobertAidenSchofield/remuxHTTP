@@ -182,7 +182,9 @@ pub async fn start_user_simkl_device_auth(
             .context_bad_request("missing_client_id"));
     }
 
-    let resp = SimklService::start_device_auth(&global_cfg.client_id, user_id).await?;
+    let resp = SimklService::start_device_auth(&global_cfg.client_id, user_id)
+        .await
+        .map_err(|e| e.context_bad_request("simkl_device_auth_failed"))?;
     let dto = SimklDeviceAuthDto {
         user_code: resp.user_code,
         verification_uri: resp.verification_uri,
@@ -208,7 +210,9 @@ pub async fn poll_user_simkl_device_auth(
             .context_bad_request("missing_client_id"));
     }
 
-    let res = SimklService::poll_device_auth(&state.ctx, &global_cfg.client_id, user_id).await?;
+    let res = SimklService::poll_device_auth(&state.ctx, &global_cfg.client_id, user_id)
+        .await
+        .map_err(|e| e.context_bad_request("simkl_device_poll_failed"))?;
     Ok(Json(res))
 }
 
