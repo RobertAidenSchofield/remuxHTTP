@@ -1,3 +1,54 @@
+# [0.33.0](https://github.com/lostb1t/remux/compare/v0.32.0...v0.33.0) (2026-09-19)
+
+
+### Bug Fixes
+
+* **desktop:** actually apply HOST and PORT settings ([#506](https://github.com/lostb1t/remux/issues/506)) ([ea7c98f](https://github.com/lostb1t/remux/commit/ea7c98f17b05e4a8f9832f2b5934b92e8a4dee89))
+* downgrade leftover RefreshLibrary batch log and lower meta_concurrency default to 14 ([012b4da](https://github.com/lostb1t/remux/commit/012b4dab7021eeb8ac49ff96fb1601bd3c043f14))
+* make RefreshLibrary progress reflect real work and stop endless refresh of items with no digital date ([#513](https://github.com/lostb1t/remux/issues/513)) ([6a85197](https://github.com/lostb1t/remux/commit/6a851975cc16901dc6350c82d028c7e5087ba6d6))
+* merge duplicate root media rows that collide on disjoint external ids ([660cc2f](https://github.com/lostb1t/remux/commit/660cc2f98bc7a082076cbb2afb3e224c916607b3))
+* **ratings:** stop dropping critic ratings that RemuxDB only lists as a source ([#507](https://github.com/lostb1t/remux/issues/507)) ([7fa739c](https://github.com/lostb1t/remux/commit/7fa739c7e95138cc0162cc7fa6e45908de8d6290))
+* set LastPlayedDate on playback start (fixes [#512](https://github.com/lostb1t/remux/issues/512)) ([676f9f2](https://github.com/lostb1t/remux/commit/676f9f211cdf5d4f8b17bff1124dde4df4b82dcf))
+* stop collection Backdrop deriving from Primary, alias Thumb to it instead, and disable image resizing (fixes [#435](https://github.com/lostb1t/remux/issues/435)) ([22b42a4](https://github.com/lostb1t/remux/commit/22b42a477303331f530be758303ad7f6ee88b0a4))
+* **streams:** improve dashboard page styling ([#502](https://github.com/lostb1t/remux/issues/502)) ([acae6fa](https://github.com/lostb1t/remux/commit/acae6fae6ee4f592489fb67a86889c4502c9063a))
+
+
+### Features
+
+* add Jellyfin's UserData sync endpoint ([#504](https://github.com/lostb1t/remux/issues/504)) ([de4a5da](https://github.com/lostb1t/remux/commit/de4a5dacb573cc54db071c97ee29ba81943ab00a))
+* **config:** make the bind address configurable ([#505](https://github.com/lostb1t/remux/issues/505)) ([954dde4](https://github.com/lostb1t/remux/commit/954dde4f5e66b669b66d97c32561b20db94126a6))
+* filter stream groups by addon (fixes [#508](https://github.com/lostb1t/remux/issues/508)) ([#511](https://github.com/lostb1t/remux/issues/511)) ([864c047](https://github.com/lostb1t/remux/commit/864c04702526a4a110106a6ad663287af803f7ec))
+
+
+### Performance Improvements
+
+* reduce memory use and stuck errors during library refresh ([#500](https://github.com/lostb1t/remux/issues/500)) ([480433e](https://github.com/lostb1t/remux/commit/480433ebde23515e195de40987c36b1a077fc72a))
+* share 429 cooldowns and cap addon fetch timeouts ([#501](https://github.com/lostb1t/remux/issues/501)) ([48e8a88](https://github.com/lostb1t/remux/commit/48e8a88bc2f3266b37e56c6c743ee2ab1f38652d))
+* stop RefreshPopularity from fully hydrating every media row ([d8dfe06](https://github.com/lostb1t/remux/commit/d8dfe06e0d5607e479bb8e844fa1bb6f9ed5a11a))
+* trace, diagnose, and fix RefreshLibrary slowness ([#509](https://github.com/lostb1t/remux/issues/509)) ([8d5fe85](https://github.com/lostb1t/remux/commit/8d5fe85a01e0a9f25fdc39b0949ac081b9fe5aad))
+
+# [0.32.0](https://github.com/lostb1t/remux/compare/v0.31.0...v0.32.0) (2026-09-16)
+
+
+### Bug Fixes
+
+* **addons:** refresh capabilities when config changes ([#480](https://github.com/lostb1t/remux/issues/480)) ([d296284](https://github.com/lostb1t/remux/commit/d2962844a4ef7249be470f6f9b12ab94ac52e83e))
+* **ffmpeg:** only apply HTTP reconnect flags to HTTP inputs ([#478](https://github.com/lostb1t/remux/issues/478)) ([69b10d8](https://github.com/lostb1t/remux/commit/69b10d84dfe47607307c13e942694e7972f97304))
+* **playback:** honor the probe fallback on the stream request that follows ([#464](https://github.com/lostb1t/remux/issues/464)) ([bf44efc](https://github.com/lostb1t/remux/commit/bf44efcacc0d6c76875dd22049e401e1cff14fd3))
+* **playback:** pick HEVC sample-entry tag from the client's DeviceProfile ([#413](https://github.com/lostb1t/remux/issues/413)) ([31a31c2](https://github.com/lostb1t/remux/commit/31a31c2263e615902982415d446c196050a9b210))
+* **playback:** serve mkv-source direct stream as-is to preserve HTTP Range support ([#440](https://github.com/lostb1t/remux/issues/440)) ([baa6502](https://github.com/lostb1t/remux/commit/baa6502c28eb6e41ab0d6d2320e7510e49b67f17))
+* **search:** replace matched search results with the stored row wholesale ([#479](https://github.com/lostb1t/remux/issues/479)) ([ad896ee](https://github.com/lostb1t/remux/commit/ad896eeee74ef0c0dc34bc11b730baea207588f7))
+* **sessions:** persist stop reports that arrive without a play session ([#463](https://github.com/lostb1t/remux/issues/463)) ([69790b7](https://github.com/lostb1t/remux/commit/69790b7b307d172e5df2314d9195b6bf16bc84d7))
+* stop opendal-local .strm scan from deadlocking on URL collisions ([#467](https://github.com/lostb1t/remux/issues/467)) ([790ba7f](https://github.com/lostb1t/remux/commit/790ba7faf64a778d14374493de86d34bdd08d263))
+* **torrent:** release torrents after their last playback user ([#476](https://github.com/lostb1t/remux/issues/476)) ([c177d11](https://github.com/lostb1t/remux/commit/c177d11f732fa4b9b269f94c759ae146406a9688))
+* **users:** collapse a saved OrderedViews that matches the live default ([#489](https://github.com/lostb1t/remux/issues/489)) ([a4e4933](https://github.com/lostb1t/remux/commit/a4e4933ed451937a6084fdad94a71dd5f7d8b0fe))
+* **webhooks:** include SeriesProviderIds in Episode/Season webhook payloads ([#487](https://github.com/lostb1t/remux/issues/487)) ([53842ca](https://github.com/lostb1t/remux/commit/53842ca9b00274216dda70a1413cb0e8df6e9e40))
+
+
+### Features
+
+* **streams:** make the stream groups page use the drag-and-drop list ([#496](https://github.com/lostb1t/remux/issues/496)) ([1b8a4b6](https://github.com/lostb1t/remux/commit/1b8a4b6341197b6740fc80b18c217356903a47c8))
+
 # [0.31.0](https://github.com/lostb1t/remux/compare/v0.30.0...v0.31.0) (2026-09-11)
 
 

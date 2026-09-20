@@ -1490,12 +1490,17 @@ pub struct Media {
     pub user_state: Option<super::UserMediaState>,
     #[sqlx(skip)]
     pub relations: Option<Vec<(MediaRelation, Media)>>,
-    /// Preloaded direct parent (season, album, channel, etc.).
+    /// Preloaded direct parent (season, album, channel, etc.). `Arc`, not
+    /// `Box`: this gets cloned once per child when fanning out a season's/
+    /// series' children (see `process_meta_item_inner`), and a `Box` clone
+    /// there deep-copies the whole stub — including any embedded relations —
+    /// into every single child instead of sharing one allocation.
     #[sqlx(skip)]
-    pub parent: Option<Box<Media>>,
-    /// Preloaded grandparent (series, artist, etc.).
+    pub parent: Option<Arc<Media>>,
+    /// Preloaded grandparent (series, artist, etc.). See `parent` for why
+    /// this is `Arc` rather than `Box`.
     #[sqlx(skip)]
-    pub grandparent: Option<Box<Media>>,
+    pub grandparent: Option<Arc<Media>>,
 
     // stream
     #[sqlx(json(nullable))]
@@ -1773,7 +1778,7 @@ impl Media {
 
         // Build a synthetic Media stub from a ParentRow + its images.
         let make_stub =
-            |row: &ParentRow, images: super::image::MediaImages| -> Box<Media> {
+            |row: &ParentRow, images: super::image::MediaImages| -> Arc<Media> {
                 let mut m = Media::default();
                 m.id = row.id;
                 m.title = row
@@ -1787,7 +1792,7 @@ impl Media {
                     .external_ids
                     .clone();
                 m.images = images;
-                Box::new(m)
+                Arc::new(m)
             };
 
         for media in records.iter_mut() {
@@ -1969,11 +1974,11 @@ impl Media {
 
     /// Build a minimal Media stub with just id and title — used when preloaded
     /// parent/grandparent data is constructed inline rather than fetched from DB.
-    pub fn stub(id: Uuid, title: impl Into<String>) -> Box<Self> {
+    pub fn stub(id: Uuid, title: impl Into<String>) -> Arc<Self> {
         let mut m = Self::default();
         m.id = id;
         m.title = title.into();
-        Box::new(m)
+        Arc::new(m)
     }
 
     pub fn parse_smart_filter(&self) -> Option<&remux_sdks::remux::CollectionFilter> {
@@ -2168,7 +2173,7 @@ impl Media {
         {
             if let Some(gp_id) = self.grandparent_id {
                 if let Some(gp) = Self::get_by_id(db, &gp_id).await? {
-                    self.grandparent = Some(Box::new(gp));
+                    self.grandparent = Some(Arc::new(gp));
                 }
             }
         }
@@ -3068,6 +3073,71 @@ impl Media {
                 .await
             }
         }
+    }
+
+    /// Every existing row that shares any external ID with `ext`, unlike
+    /// `find_by_external_ids` which collapses an ambiguous match down to a
+    /// single winner. Used to find the *other* row(s) a winner's upsert
+    /// collided with, so they can be merged away instead of left to collide
+    /// again on every future refresh.
+    async fn find_all_by_external_ids(
+        db: &SqlitePool,
+        kind: &MediaKind,
+        ext: &ExternalIds,
+    ) -> Vec<Uuid> {
+        let id_fields = Self::external_id_fields(kind, ext);
+        if id_fields.is_empty() {
+            return Vec::new();
+        }
+        let mut qb = sqlx::QueryBuilder::new("SELECT DISTINCT id FROM media WHERE ");
+        Self::push_external_id_where(&mut qb, kind, &id_fields);
+        qb.build_query_scalar()
+            .fetch_all(db)
+            .await
+            .unwrap_or_default()
+    }
+
+    /// Recovers from a root-media upsert that failed because one of
+    /// `media`'s external IDs is already uniquely owned by a *different*
+    /// row than the one it was about to be written to (see the winner-pick
+    /// in `find_existing_id_by_ext`/`resolve_ambiguous_external_id` — it can
+    /// only ever redirect onto one row, so a second, disjoint match is left
+    /// dangling until an incoming item's ID set spans both). SQLite's
+    /// `ON CONFLICT DO UPDATE` can't resolve that: it only redirects the
+    /// initial insert-vs-PK conflict, not a unique-index collision the
+    /// UPDATE's own `SET` introduces, so the upsert fails outright and
+    /// would otherwise repeat identically on every future refresh.
+    ///
+    /// Finds the other row(s) still holding one of `media`'s external IDs
+    /// and merges each into `media.id`: reparents its children/watch
+    /// state/relations (the same cascade used for id-remap-before-insert),
+    /// then deletes it. Returns `true` if a conflicting row was found and
+    /// merged, so the caller can retry the upsert once.
+    pub async fn merge_conflicting_duplicate(db: &SqlitePool, media: &Self) -> bool {
+        let matches =
+            Self::find_all_by_external_ids(db, &media.kind, &media.external_ids).await;
+        let mut merged_any = false;
+        for loser_id in matches {
+            if loser_id == media.id {
+                continue;
+            }
+            if let Err(e) =
+                Self::cascade_update_parent_refs(db, loser_id, media.id).await
+            {
+                warn!(loser = %loser_id, winner = %media.id, error = %e,
+                    "cascade_update_parent_refs failed during duplicate merge");
+                continue;
+            }
+            if let Err(e) = Self::delete(db, &loser_id).await {
+                warn!(loser = %loser_id, winner = %media.id, error = %e,
+                    "failed to delete merged duplicate row");
+                continue;
+            }
+            warn!(loser = %loser_id, winner = %media.id, kind = %media.kind,
+                "merged duplicate root media row sharing an external id");
+            merged_any = true;
+        }
+        merged_any
     }
 
     async fn resolve_ambiguous_external_id(
@@ -4780,7 +4850,10 @@ impl Media {
                                 format!("COALESCE(wd.effective_date, '{null_date}') {dir}")
                             } else if filter.user_id.is_some() {
                                 // dp alias from the UMS-driven records_qb above.
-                                format!("dp.last_played_at {}", dir)
+                                // COALESCE with played_at: a synced/imported row may only
+                                // carry the older column, and a fully-watched item's own
+                                // completion time is still meaningful for ranking.
+                                format!("COALESCE(dp.last_played_at, dp.played_at) {}", dir)
                             } else {
                                 format!("title COLLATE NOCASE {}", dir)
                             }
@@ -5687,12 +5760,29 @@ impl Media {
         after_id: Option<Uuid>,
         total_count: bool,
     ) -> Result<(Vec<Self>, Option<u32>)> {
+        // The missing-digital-date branch used to retry forever with no cutoff:
+        // TMDB's release_dates data often has no Digital/Physical/TV entry at
+        // all for a title (especially older ones), so `digital_released_at`
+        // can never be filled in no matter how many times it's refetched —
+        // that alone made up the vast majority of "refreshable" items in
+        // practice. Give it a week of retries (created_at < 7 days, in case
+        // the first fetch was incomplete/rate-limited or provider data
+        // catches up shortly after import), or keep trying indefinitely while
+        // the title itself is recent enough (released_at < 1 year) that a
+        // digital release is still plausible — otherwise stop selecting it.
         const WHERE: &str = r#"
         WHERE kind IN (?, ?)
           AND (
             refreshed_at IS NULL
             OR (kind = 'series' AND (status IS NULL OR status != 'ended') AND datetime(created_at) < datetime('now', '-1 hour'))
-            OR (digital_released_at IS NULL AND datetime(created_at) < datetime('now', '-1 hour'))
+            OR (
+              digital_released_at IS NULL
+              AND datetime(created_at) < datetime('now', '-1 hour')
+              AND (
+                datetime(created_at) >= datetime('now', '-7 days')
+                OR (released_at IS NOT NULL AND datetime(released_at) >= datetime('now', '-365 days'))
+              )
+            )
           )"#;
 
         let total = if total_count {
@@ -5731,6 +5821,60 @@ impl Media {
         };
 
         Ok((rows, total))
+    }
+
+    /// Minimal per-item projection for `RefreshPopularityTask`, which only
+    /// reads each item's IMDB id and writes back rating/popularity fields.
+    /// The general-purpose `get_by_filter` this used to run through
+    /// unconditionally hydrates full `Media` rows (every JSON blob column)
+    /// plus a batched images load and a batched tags load for every page —
+    /// none of which this task touches — which meant fully materializing
+    /// every movie/series in the library (tens of thousands of rows) just to
+    /// read two fields off each one. This selects only what's actually
+    /// needed: `title`/`kind` must still be carried because `Media::upsert`
+    /// overwrites them unconditionally (not `COALESCE`d) on conflict, and
+    /// `external_ratings` must be carried because it's replaced whole-column
+    /// (also not merged in SQL) — the caller's own merge logic depends on
+    /// starting from the real stored value, not an empty default.
+    pub async fn list_for_popularity_sync(
+        db: &SqlitePool,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Self>> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: Uuid,
+            title: String,
+            kind: MediaKind,
+            #[sqlx(json)]
+            external_ids: ExternalIds,
+            #[sqlx(json(nullable))]
+            external_ratings: Option<ExternalRatings>,
+        }
+
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT id, title, kind, external_ids, external_ratings FROM media \
+             WHERE kind IN (?, ?) AND json_extract(external_ids, '$.imdb') IS NOT NULL \
+             ORDER BY id LIMIT ? OFFSET ?",
+        )
+        .bind(MediaKind::Movie)
+        .bind(MediaKind::Series)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| Self {
+                id: r.id,
+                title: r.title,
+                kind: r.kind,
+                external_ids: r.external_ids,
+                external_ratings: r.external_ratings,
+                ..Default::default()
+            })
+            .collect())
     }
 
     pub async fn get_by_jellyfin_filter(
@@ -6168,10 +6312,9 @@ impl Media {
                     self.idx
                         .unwrap_or(0)
                 ),
-                MediaKind::Season => format!(
-                    "Season {}",
+                MediaKind::Season => crate::addons::season_title(
                     self.idx
-                        .unwrap_or(0)
+                        .unwrap_or(0),
                 ),
                 _ => self
                     .title
@@ -7270,7 +7413,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     let season_id = Media::season_id(&series_key, season_idx);
                     let mut season = Media {
                         id: season_id,
-                        title: format!("Season {}", season_idx),
+                        title: crate::addons::season_title(season_idx),
                         kind: MediaKind::Season,
                         idx: Some(season_idx),
                         parent_id: Some(media.id),
@@ -7361,7 +7504,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                 let season_id = Media::season_id(&series_key, season_idx);
                 let mut season = Media {
                     id: season_id,
-                    title: format!("Season {}", season_idx),
+                    title: crate::addons::season_title(season_idx),
                     kind: MediaKind::Season,
                     idx: Some(season_idx),
                     grandparent_id: Some(media.id),
@@ -7508,7 +7651,7 @@ pub fn stremio_meta_seasons(
 
         let mut season = Media {
             id: season_id,
-            title: format!("Season {}", season_idx),
+            title: crate::addons::season_title(season_idx),
             kind: MediaKind::Season,
             idx: Some(season_idx),
             parent_id: Some(series_id),
@@ -9287,6 +9430,355 @@ mod tests {
             titles.contains(&"Has Digital Release"),
             "movie with digital release date must be shown; got: {:?}",
             titles
+        );
+    }
+
+    /// Two existing rows can each hold a *disjoint* external id for the same
+    /// real title (row A: imdb only, row B: tmdb only) — neither collides
+    /// with the other's unique index alone. Once a refreshed item arrives
+    /// carrying both ids and gets remapped onto row A (the ambiguous-match
+    /// winner), `merge_conflicting_duplicate` must find row B, reparent its
+    /// children onto row A, and delete it — rather than leaving both rows to
+    /// collide identically on every future refresh.
+    #[tokio::test]
+    async fn merge_conflicting_duplicate_reconciles_disjoint_id_rows() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        let ext_a = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt9990101".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let id_a = Uuid::from(&MediaIdRaw {
+            kind: MediaKind::Series,
+            external_ids: ext_a.clone(),
+            season: None,
+            episode: None,
+        });
+        let ext_b = ExternalIds {
+            tmdb: Some(9990101),
+            ..Default::default()
+        };
+        let id_b = Uuid::from(&MediaIdRaw {
+            kind: MediaKind::Series,
+            external_ids: ext_b.clone(),
+            season: None,
+            episode: None,
+        });
+
+        let mut row_a = Media {
+            id: id_a,
+            title: "Row A".to_string(),
+            kind: MediaKind::Series,
+            external_ids: ext_a.clone(),
+            ..Default::default()
+        };
+        row_a
+            .save(db)
+            .await
+            .unwrap();
+        let mut row_b = Media {
+            id: id_b,
+            title: "Row B".to_string(),
+            kind: MediaKind::Series,
+            external_ids: ext_b.clone(),
+            ..Default::default()
+        };
+        row_b
+            .save(db)
+            .await
+            .unwrap();
+
+        // A season under row B, to verify it gets reparented onto the winner.
+        let season_id = get_uuid();
+        let mut season_b = Media {
+            id: season_id,
+            title: "Season 1".to_string(),
+            kind: MediaKind::Season,
+            parent_id: Some(id_b),
+            grandparent_id: Some(id_b),
+            idx: Some(1),
+            ..Default::default()
+        };
+        season_b
+            .save(db)
+            .await
+            .unwrap();
+
+        // The refreshed item carries both ids and was already remapped onto
+        // row A's id by the ambiguous-match winner-pick.
+        let merged_ext = ExternalIds {
+            imdb: ext_a.imdb,
+            tmdb: ext_b.tmdb,
+            ..Default::default()
+        };
+        let incoming = Media {
+            id: id_a,
+            title: "Row A".to_string(),
+            kind: MediaKind::Series,
+            external_ids: merged_ext,
+            ..Default::default()
+        };
+
+        let merged = Media::merge_conflicting_duplicate(db, &incoming).await;
+        assert!(
+            merged,
+            "expected the disjoint-id duplicate row to be found and merged"
+        );
+
+        assert!(
+            Media::get_by_id(db, &id_b)
+                .await
+                .unwrap()
+                .is_none(),
+            "loser row should be deleted"
+        );
+        assert!(
+            Media::get_by_id(db, &id_a)
+                .await
+                .unwrap()
+                .is_some(),
+            "winner row should remain"
+        );
+
+        let reparented = Media::get_by_id(db, &season_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reparented.parent_id,
+            Some(id_a),
+            "season should be reparented onto the winner"
+        );
+        assert_eq!(
+            reparented.grandparent_id,
+            Some(id_a),
+            "season's grandparent_id should be reparented onto the winner"
+        );
+    }
+
+    /// A missing `digital_released_at` used to make an item refreshable
+    /// forever: TMDB's release_dates data often has no Digital/Physical/TV
+    /// entry at all for a title (especially older ones), so the field could
+    /// never be filled in no matter how many times it was refetched.
+    /// `get_refreshable` must stop selecting such an item once it's had a
+    /// fair shot — a week of retries since it was added, or indefinitely
+    /// while the title itself is recent enough that a digital release is
+    /// still plausible — without ever fabricating a value for the field
+    /// itself.
+    #[tokio::test]
+    async fn get_refreshable_gives_up_on_old_items_with_no_digital_date() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let now = chrono::Utc::now().naive_utc();
+
+        let make_ids = |imdb: &str| {
+            let ext = ExternalIds {
+                imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+                ..Default::default()
+            };
+            let id = uuid::Uuid::from(&MediaIdRaw {
+                kind: MediaKind::Movie,
+                external_ids: ext.clone(),
+                season: None,
+                episode: None,
+            });
+            (id, ext)
+        };
+
+        // Old release, imported a month ago, never got a digital date — past
+        // its week-long grace period and not recent enough to keep trying.
+        let (id_stale, ext_stale) = make_ids("tt9990201");
+        let mut stale = Media {
+            id: id_stale,
+            title: "Ancient, Long Imported".to_string(),
+            kind: MediaKind::Movie,
+            external_ids: ext_stale,
+            released_at: Some(now - chrono::Duration::days(3650)),
+            digital_released_at: None,
+            created_at: now - chrono::Duration::days(30),
+            refreshed_at: Some(now - chrono::Duration::days(30)),
+            ..Default::default()
+        };
+        stale
+            .save(db)
+            .await
+            .unwrap();
+
+        // Old release, but only imported yesterday — still within its
+        // week-long grace period regardless of how old the content is.
+        let (id_new, ext_new) = make_ids("tt9990202");
+        let mut recently_added = Media {
+            id: id_new,
+            title: "Ancient, Just Imported".to_string(),
+            kind: MediaKind::Movie,
+            external_ids: ext_new,
+            released_at: Some(now - chrono::Duration::days(3650)),
+            digital_released_at: None,
+            created_at: now - chrono::Duration::days(1),
+            refreshed_at: Some(now - chrono::Duration::days(1)),
+            ..Default::default()
+        };
+        recently_added
+            .save(db)
+            .await
+            .unwrap();
+
+        // Recent release, imported a month ago — a digital date is still
+        // plausible, so it must keep being retried regardless of import age.
+        let (id_recent_release, ext_recent) = make_ids("tt9990203");
+        let mut recent_release = Media {
+            id: id_recent_release,
+            title: "Recent Release".to_string(),
+            kind: MediaKind::Movie,
+            external_ids: ext_recent,
+            released_at: Some(now - chrono::Duration::days(30)),
+            digital_released_at: None,
+            created_at: now - chrono::Duration::days(30),
+            refreshed_at: Some(now - chrono::Duration::days(30)),
+            ..Default::default()
+        };
+        recent_release
+            .save(db)
+            .await
+            .unwrap();
+
+        let (batch, _) = Media::get_refreshable(db, 100, None, false)
+            .await
+            .unwrap();
+        let ids: HashSet<Uuid> = batch
+            .iter()
+            .map(|m| m.id)
+            .collect();
+
+        assert!(
+            !ids.contains(&id_stale),
+            "old item with no digital date, long imported, must stop being retried"
+        );
+        assert!(
+            ids.contains(&id_new),
+            "recently-imported item must still get its week-long grace period"
+        );
+        assert!(
+            ids.contains(&id_recent_release),
+            "recently-released item must keep being retried regardless of import age"
+        );
+    }
+
+    /// `list_for_popularity_sync` must carry `title`/`kind`/`external_ratings`
+    /// through its minimal projection, not just `id`/`external_ids` — those
+    /// fields aren't optional extras: `Media::upsert` overwrites `title`/
+    /// `kind` unconditionally on conflict (not `COALESCE`d) and replaces
+    /// `external_ratings` whole-column rather than merging it in SQL, so a
+    /// caller that fetched a blank/default value for any of them and wrote
+    /// it back would silently clobber the real title or wipe out unrelated
+    /// rating sources (e.g. TMDB) that a popularity sync never touches.
+    #[tokio::test]
+    async fn list_for_popularity_sync_round_trips_without_clobbering_other_fields() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        let ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt9990301".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let id = Uuid::from(&MediaIdRaw {
+            kind: MediaKind::Movie,
+            external_ids: ext.clone(),
+            season: None,
+            episode: None,
+        });
+        let mut original = Media {
+            id,
+            title: "Real Title".to_string(),
+            kind: MediaKind::Movie,
+            external_ids: ext,
+            external_ratings: Some(ExternalRatings {
+                tmdb: Some(Rating {
+                    score: 8.5,
+                    vote_count: Some(1200),
+                }),
+                remuxdb: None,
+            }),
+            ..Default::default()
+        };
+        original
+            .save(db)
+            .await
+            .unwrap();
+
+        let page = Media::list_for_popularity_sync(db, 10, 0)
+            .await
+            .unwrap();
+        let mut fetched = page
+            .into_iter()
+            .find(|m| m.id == id)
+            .expect("item should be returned by the projection");
+
+        assert_eq!(fetched.title, "Real Title");
+        assert_eq!(fetched.kind, MediaKind::Movie);
+        assert_eq!(
+            fetched
+                .external_ratings
+                .as_ref()
+                .and_then(|r| r
+                    .tmdb
+                    .as_ref())
+                .map(|r| r.score),
+            Some(8.5),
+            "pre-existing tmdb rating must survive the minimal projection"
+        );
+
+        // Mimic what `persist_metrics` does: merge a new remuxdb rating into
+        // whatever was already there, then upsert the whole object back.
+        fetched
+            .external_ratings
+            .get_or_insert_default()
+            .remuxdb = Some(RemuxDbRatings {
+            score: Some(7.0),
+            score_average: Some(7.0),
+            tomatoes: None,
+            sources: vec![],
+            updated_at: None,
+        });
+        Media::upsert(db, &[fetched])
+            .await
+            .unwrap();
+
+        let stored = Media::get_by_id(db, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.title, "Real Title", "title must not be clobbered");
+        assert_eq!(stored.kind, MediaKind::Movie, "kind must not be clobbered");
+        let ratings = stored
+            .external_ratings
+            .expect("external_ratings must survive the round trip");
+        assert_eq!(
+            ratings
+                .tmdb
+                .map(|r| r.score),
+            Some(8.5),
+            "unrelated tmdb rating must not be wiped out by the popularity sync"
+        );
+        assert_eq!(
+            ratings
+                .remuxdb
+                .and_then(|r| r.score),
+            Some(7.0),
+            "new remuxdb rating must be persisted"
         );
     }
 

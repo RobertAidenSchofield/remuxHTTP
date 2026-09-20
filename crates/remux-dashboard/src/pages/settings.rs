@@ -6,9 +6,10 @@ use dioxus::prelude::*;
 use remux_sdks::remux::{
     CountryInfo, CultureDto, EmbeddedSubtitleHandling, EncodingOptions, GetCountries,
     GetCultures, GetEncodingConfiguration, GetIntroConfiguration,
-    GetSimklConfiguration, GetSystemConfiguration, HardwareAccelerationType, IntroOptions, IntroOrder,
-    IntroTriggers, ServerConfiguration, SimklGlobalConfigDto, StartTask, UpdateEncodingConfiguration,
-    UpdateIntroConfiguration, UpdateSimklConfiguration, UpdateSystemConfiguration,
+    GetSimklConfiguration, GetSystemConfiguration, HardwareAccelerationType, IntroOptions,
+    IntroOrder, IntroTriggers, ServerConfiguration, SimklGlobalConfigDto,
+    SortMediaSourcesMode, StartTask, UpdateEncodingConfiguration, UpdateIntroConfiguration,
+    UpdateSimklConfiguration, UpdateSystemConfiguration,
 };
 
 #[component]
@@ -20,7 +21,8 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut countries: Signal<Vec<CountryInfo>> = use_signal(Vec::new);
     let mut cultures: Signal<Vec<CultureDto>> = use_signal(Vec::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
-    let mut meta_concurrency = use_signal(|| 12_i64);
+    let mut meta_concurrency = use_signal(|| 20_i64);
+    let mut addon_fetch_timeout_secs = use_signal(|| 5_i64);
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
@@ -60,6 +62,10 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             .unwrap_or(100),
                     );
                     meta_concurrency.set(cfg.meta_concurrency);
+                    addon_fetch_timeout_secs.set(
+                        cfg.addon_fetch_timeout_secs
+                            .unwrap_or(5),
+                    );
                     filter_digital_release.set(cfg.filter_by_digital_release_date);
                     digital_release_buffer.set(cfg.digital_release_buffer_days);
                     subtitle_languages.set(
@@ -110,6 +116,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
             .clone();
         let max = *catalog_max_items.peek();
         let concurrency = *meta_concurrency.peek();
+        let addon_timeout = *addon_fetch_timeout_secs.peek();
         let filter_dr = *filter_digital_release.peek();
         let dr_buffer = *digital_release_buffer.peek();
         let sub_langs_str = subtitle_languages
@@ -129,6 +136,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.enable_next_up_in_continue_watching = Some(next_up_unified);
         cfg.catalog_max_items = Some(max);
         cfg.meta_concurrency = concurrency;
+        cfg.addon_fetch_timeout_secs = Some(addon_timeout);
         cfg.filter_by_digital_release_date = filter_dr;
         cfg.digital_release_buffer_days = dr_buffer;
         cfg.subtitle_languages = Some(
@@ -247,6 +255,26 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             }
                             p { class: "field-hint",
                                 "Number of items to enrich with metadata concurrently during library import. Higher values are faster but increase memory usage and may trigger rate limits on metadata sources. Default: 12."
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "s-addon-timeout", "Addon Fetch Timeout (seconds)" }
+                            input {
+                                id: "s-addon-timeout",
+                                r#type: "number",
+                                class: "field-input",
+                                min: "1",
+                                max: "120",
+                                value: "{addon_fetch_timeout_secs}",
+                                oninput: move |e| {
+                                    if let Ok(n) = e.value().parse::<i64>() {
+                                        addon_fetch_timeout_secs.set(n);
+                                    }
+                                },
+                            }
+                            p { class: "field-hint",
+                                "Max time to wait for a single metadata addon's response before treating it as failed and moving on. Lower values keep a slow or unreachable addon from stalling a refresh; higher values give slow addons more room to respond. Default: 5."
                             }
                         }
 
@@ -866,6 +894,133 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         }
                     }
                 }
+        }
+    }
+}
+
+#[component]
+pub fn StreamSortingSettingsCard(app_state: AppState) -> Element {
+    let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
+    let mut sort_mode = use_signal(|| SortMediaSourcesMode::Best);
+    let mut show_decision = use_signal(|| true);
+    let mut loading = use_signal(|| true);
+    let mut saving = use_signal(|| false);
+    let mut error: Signal<Option<String>> = use_signal(|| None);
+
+    let app_state_load = app_state.clone();
+    use_effect(move || {
+        let client = app_state_load.clone();
+        spawn(async move {
+            match client
+                .execute(GetSystemConfiguration)
+                .await
+            {
+                Ok(cfg) => {
+                    sort_mode.set(
+                        cfg.sort_media_sources
+                            .unwrap_or_default(),
+                    );
+                    show_decision.set(
+                        cfg.show_playback_decision_in_title
+                            .unwrap_or(true),
+                    );
+                    base_cfg.set(Some(cfg));
+                }
+                Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    let description = match *sort_mode.read() {
+        SortMediaSourcesMode::Disabled => {
+            "MediaSources stay in probe/addon order — no capability-based sorting."
+        }
+        SortMediaSourcesMode::Best => {
+            "Direct Play and Direct Stream count equally (Direct Stream is just a low-overhead container remux), so quality picks the winner between them — a higher-bitrate remux can outrank a lower-bitrate direct play. A version that actually needs a re-encode still ranks below both. Recommended for most setups."
+        }
+        SortMediaSourcesMode::Compatibility => {
+            "Never prefer a version that needs any transcode over a direct play, and never prefer a remux over a true direct play, even if the transcode-needing one is technically higher quality."
+        }
+        SortMediaSourcesMode::Quality => {
+            "Best quality (resolution, HDR, bit depth, audio) always wins, even if it means transcoding."
+        }
+    };
+
+    rsx! {
+        Card { title: "General",
+            if *loading.read() {
+                LoadingText {}
+            } else {
+                div { style: "display:flex;flex-direction:column;gap:14px",
+                    div { class: "field",
+                        label { class: "field-label", r#for: "sort-media-sources", "Sort streams by device capability" }
+                        div { class: "field-hint", "{description}" }
+                        select {
+                            id: "sort-media-sources",
+                            class: "select-input",
+                            disabled: *saving.read(),
+                            value: "{sort_mode.read().to_string()}",
+                            onchange: {
+                                let client = app_state.clone();
+                                move |e: Event<FormData>| {
+                                    let Ok(mode) = e.value().parse::<SortMediaSourcesMode>() else { return };
+                                    sort_mode.set(mode);
+                                    let Some(cfg) = base_cfg.peek().clone() else { return };
+                                    let updated = ServerConfiguration {
+                                        sort_media_sources: Some(mode),
+                                        ..cfg
+                                    };
+                                    saving.set(true);
+                                    error.set(None);
+                                    let c = client.clone();
+                                    spawn(async move {
+                                        match c.execute(UpdateSystemConfiguration { config: updated.clone() }).await {
+                                            Ok(_) => base_cfg.set(Some(updated)),
+                                            Err(e) => error.set(Some(format!("Failed to save: {e}"))),
+                                        }
+                                        saving.set(false);
+                                    });
+                                }
+                            },
+                            option { value: "Disabled", selected: *sort_mode.read() == SortMediaSourcesMode::Disabled, "Disabled" }
+                            option { value: "Best", selected: *sort_mode.read() == SortMediaSourcesMode::Best, "Best" }
+                            option { value: "Compatibility", selected: *sort_mode.read() == SortMediaSourcesMode::Compatibility, "Compatibility" }
+                            option { value: "Quality", selected: *sort_mode.read() == SortMediaSourcesMode::Quality, "Quality" }
+                        }
+                    }
+                    ToggleRow {
+                        label: "Show playback decision in title",
+                        description: "Append \"(Direct Play)\", \"(Direct Stream)\", or \"(Transcode)\" to each stream's display title, judged against the device's last known DeviceProfile. Enabled by default.",
+                        checked: *show_decision.read(),
+                        disabled: *saving.read(),
+                        on_change: {
+                            let client = app_state.clone();
+                            move |v| {
+                                show_decision.set(v);
+                                let Some(cfg) = base_cfg.peek().clone() else { return };
+                                let updated = ServerConfiguration {
+                                    show_playback_decision_in_title: Some(v),
+                                    ..cfg
+                                };
+                                saving.set(true);
+                                error.set(None);
+                                let c = client.clone();
+                                spawn(async move {
+                                    match c.execute(UpdateSystemConfiguration { config: updated.clone() }).await {
+                                        Ok(_) => base_cfg.set(Some(updated)),
+                                        Err(e) => error.set(Some(format!("Failed to save: {e}"))),
+                                    }
+                                    saving.set(false);
+                                });
+                            }
+                        }
+                    }
+                    if let Some(err) = error.read().as_ref() {
+                        ErrorAlert { message: err.clone() }
+                    }
+                }
+            }
         }
     }
 }

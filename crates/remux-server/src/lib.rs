@@ -37,7 +37,8 @@ use tower_http::{
 };
 use tracing::{self, debug, error, info, instrument, warn};
 use tracing_subscriber::{
-    EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+    EnvFilter, Layer as TracingLayer, fmt, layer::SubscriberExt,
+    util::SubscriberInitExt,
 };
 use url::Url;
 use uuid::Uuid;
@@ -178,21 +179,39 @@ pub async fn serve(config: Config, paths: FilesystemPaths) -> Result<()> {
     let web_path = paths
         .web_path
         .clone();
-    let port = config.port;
+    let addr = std::net::SocketAddr::new(config.host, config.port);
     let (router, _) = init_app(config, Some(paths), admin, move |pool| {
         WebClientService::from_filesystem(&web_path, pool)
     })
     .await?;
-    bind_and_serve(router, port).await
+    bind_and_serve(router, addr).await
 }
 
-pub async fn bind_and_serve(router: Router, port: u16) -> Result<()> {
-    let addr = format!("0.0.0.0:{port}");
+pub async fn bind_and_serve(router: Router, addr: std::net::SocketAddr) -> Result<()> {
     let app = MapRequestLayer::new(rewrite_request_uri).layer(router);
     info!("starting webserver at {addr}");
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())
+}
+
+/// Loads `Config` from `env`, layered over the compiled-in defaults. Shared by
+/// every binary embedding this crate (the headless server binary, the desktop
+/// tray app) so they all resolve settings — `HOST`/`PORT`/etc. — the same way,
+/// rather than each reimplementing (or skipping) the config/env merge.
+pub fn load_config(
+    env: config::Environment,
+) -> std::result::Result<Config, config::ConfigError> {
+    config::Config::builder()
+        .add_source(env.try_parsing(true))
+        .build()?
+        .try_deserialize()
+}
+
+/// [`load_config`] against the process environment — the common case for a
+/// binary with no need to inject a custom source (tests aside).
+pub fn load_config_from_env() -> std::result::Result<Config, config::ConfigError> {
+    load_config(config::Environment::default())
 }
 
 #[cfg(unix)]
@@ -548,6 +567,10 @@ fn default_dashboard_path() -> String {
         .unwrap_or_else(|| "/data/dashboard".to_string())
 }
 
+fn default_host() -> std::net::IpAddr {
+    std::net::Ipv4Addr::UNSPECIFIED.into()
+}
+
 fn default_port() -> u16 {
     3000
 }
@@ -564,6 +587,11 @@ pub struct Config {
     pub database_url: Option<String>,
     /// `None` means derive from `data_dir` — call `resolve()` after loading.
     pub torrent_data_dir: Option<String>,
+    /// Address the HTTP server listens on. Defaults to every IPv4 interface;
+    /// `127.0.0.1` keeps it behind a reverse proxy on the same host, `::`
+    /// listens on IPv6 as well.
+    #[serde(default = "default_host")]
+    pub host: std::net::IpAddr,
     #[serde(default = "default_port")]
     pub port: u16,
     /// Explicit port for the internal torrent HTTP server.
@@ -596,6 +624,10 @@ pub struct Config {
     pub activity_log_retention_days: u32,
     #[serde(default = "default_jellyfin_version")]
     pub jellyfin_version: String,
+    /// OTLP gRPC endpoint (e.g. `http://jaeger-collector:4317`) to export
+    /// tracing spans to. `None` (the default) disables tracing export
+    /// entirely — normal log output is unaffected either way.
+    pub otlp_endpoint: Option<String>,
     #[serde(default)]
     pub dynamic_regex: DynamicRegexConfig,
     #[serde(default)]
@@ -746,6 +778,7 @@ impl Default for Config {
             data_dir: default_data_dir(),
             database_url: None,
             torrent_data_dir: None,
+            host: default_host(),
             port: default_port(),
             torrent_http_port: default_torrent_http_port_opt(),
             slow_query_threshold_ms: default_slow_query_threshold_ms(),
@@ -758,6 +791,7 @@ impl Default for Config {
             jellyfin_version: default_jellyfin_version(),
             dynamic_regex: DynamicRegexConfig::default(),
             simkl: SimklConfig::default(),
+            otlp_endpoint: None,
         }
         .resolve()
     }
@@ -847,7 +881,52 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     req
 }
 
-pub fn setup_logging(log_dir: Option<&std::path::Path>) {
+/// Builds the OTLP (gRPC) tracing layer and registers its tracer provider
+/// globally so it stays alive for the process lifetime — dropping it would
+/// silently stop span export. `endpoint` is e.g. `http://jaeger:4317`.
+fn build_otel_layer<S>(
+    endpoint: &str,
+) -> Option<impl tracing_subscriber::Layer<S> + Send + Sync + 'static>
+where
+    S: tracing::Subscriber
+        + Send
+        + Sync
+        + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
+{
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_otlp::WithExportConfig;
+
+    let exporter = match opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+    {
+        Ok(exporter) => exporter,
+        Err(e) => {
+            eprintln!("failed to build OTLP exporter for {endpoint}: {e}");
+            return None;
+        }
+    };
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            opentelemetry_sdk::Resource::builder()
+                .with_service_name("remux-server")
+                .build(),
+        )
+        .build();
+
+    let tracer = provider.tracer("remux-server");
+    opentelemetry::global::set_tracer_provider(provider);
+    Some(tracing_opentelemetry::layer().with_tracer(tracer))
+}
+
+/// `otlp_endpoint`: when set (e.g. `http://jaeger:4317`), tracing spans are
+/// also exported via OTLP — see `Config::otlp_endpoint`. Gated by the same
+/// `RUST_LOG`/`EnvFilter` as normal log output, so raising the level to see
+/// more logs also sends more spans.
+pub fn setup_logging(log_dir: Option<&std::path::Path>, otlp_endpoint: Option<&str>) {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("warn,remux=info"));
 
@@ -875,10 +954,34 @@ pub fn setup_logging(log_dir: Option<&std::path::Path>) {
             .with_writer(appender)
     });
 
+    // FmtSpan::CLOSE makes every span passing through a layer log its own
+    // duration on exit. Scoped to the `remux_server::metadata_refresh`
+    // target only (every refresh-pipeline span sets this explicitly) via a
+    // dedicated layer + per-layer filter, rather than applied to fmt_layer/
+    // file_layer above — those cover the whole app, and every other
+    // `#[instrument]`'d function (playback, subtitles, etc.) would otherwise
+    // start emitting close events too, at whatever level it happens to be
+    // instrumented at (often its default of INFO).
+    let refresh_span_layer = fmt::layer()
+        .with_timer(fmt::time::ChronoLocal::new("%H:%M:%S".to_string()))
+        .with_target(true)
+        .with_line_number(true)
+        .with_file(false)
+        .with_span_events(fmt::format::FmtSpan::CLOSE)
+        .compact()
+        .with_filter(
+            tracing_subscriber::filter::Targets::new()
+                .with_target("remux_server::metadata_refresh", tracing::Level::TRACE),
+        );
+
+    let otel_layer = otlp_endpoint.and_then(build_otel_layer);
+
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt_layer)
         .with(file_layer)
+        .with(refresh_span_layer)
+        .with(otel_layer)
         .try_init()
         .ok(); // try_init + ok() so tests don't panic on repeated calls
 }

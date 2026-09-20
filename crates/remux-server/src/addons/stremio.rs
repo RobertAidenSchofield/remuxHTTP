@@ -68,7 +68,7 @@ impl AddonPreset for StremioPreset {
 
     fn from_cfg(
         &self,
-        _addon_id: Uuid,
+        addon_id: Uuid,
         cfg: &serde_json::Value,
         _config: &crate::Config,
     ) -> Result<AddonCapabilities> {
@@ -81,11 +81,13 @@ impl AddonPreset for StremioPreset {
             .map_err(|e| anyhow!("Invalid manifest_url: {e}"))?;
         let client = super::make_http_client();
         let addon = Arc::new(StremioAddon {
+            addon_id,
             manifest_url,
             client,
             medias_cache: Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            failed: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         });
         Ok(AddonCapabilities {
             kind: Some(addon.clone()),
@@ -191,6 +193,7 @@ where
 }
 
 pub struct StremioAddon {
+    addon_id: Uuid,
     manifest_url: StremioManifestUrl,
     client: reqwest::Client,
     /// Raw Stremio `Meta` cached per series lookup-id for the duration of one tree sync.
@@ -199,11 +202,20 @@ pub struct StremioAddon {
     medias_cache: Arc<
         std::sync::Mutex<std::collections::HashMap<String, Option<Arc<sdks::stremio::Meta>>>>,
     >,
+    /// Series-level lookup ids whose fetch already failed during this tree
+    /// walk. Without this, every season and episode under a series whose
+    /// fetch failed independently retries the identical failing request —
+    /// once for the series, then again for every child. Checked alongside
+    /// `medias_cache` and evicted at the same point, by `on_series_done`.
+    failed: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl StremioAddon {
     fn service(&self) -> Result<stremio_service::StremioService> {
-        stremio_service::StremioService::from_url(&self.manifest_url)
+        Ok(
+            stremio_service::StremioService::from_url(&self.manifest_url)?
+                .with_shared_rate_limit(common::addon_rate_limit(self.addon_id)),
+        )
     }
 }
 
@@ -323,9 +335,29 @@ impl CatalogAddon for StremioAddon {
                     .any(|e| e.name == "skip")
             })
             .unwrap_or(false);
+        // Catalog pages are fetched speculatively — up to `page_concurrency`
+        // pages start in parallel before the first empty/404 page is even
+        // seen, since there's no way to know the true page count up front.
+        // `meta_concurrency` bounds a very different thing (how many *items*
+        // get enriched concurrently across a whole refresh) and can be set
+        // much higher than is sane for this; capped independently so a large
+        // `meta_concurrency` can't turn a one-page catalog into a burst of
+        // speculative requests (and avoidable 429s) against one addon.
+        const MAX_CATALOG_PAGE_CONCURRENCY: usize = 5;
+        let page_concurrency = db::Settings::get_config_or_default(&ctx.db)
+            .await
+            .meta_concurrency
+            .max(1)
+            .min(MAX_CATALOG_PAGE_CONCURRENCY as i64)
+            as usize;
 
         let stream = svc
-            .get_catalog_stream(kind.to_string(), id.to_string(), supports_skip)
+            .get_catalog_stream(
+                kind.to_string(),
+                id.to_string(),
+                supports_skip,
+                page_concurrency,
+            )
             .await?;
         let tmdb_client = crate::common::tmdb_client(
             &ctx.db,
@@ -386,11 +418,34 @@ impl MetaAddon for StremioAddon {
         _config: &crate::api::ServerConfiguration,
     ) -> Result<Option<db::Media>> {
         let svc = self.service()?;
-        stremio_meta_fetch(&svc, media, ctx, &self.medias_cache).await
+        stremio_meta_fetch(&svc, media, ctx, &self.medias_cache, &self.failed).await
+    }
+
+    fn on_meta_fetch_timeout(&self, media: &db::Media) {
+        // `tokio::time::timeout` dropped our in-flight fetch before it could
+        // record its own failure (see `fetch_and_cache_meta`) — record it
+        // here instead, or every other season/episode of this series will
+        // independently retry the identical request that just timed out.
+        if let Some(meta_id) = stremio_meta_lookup_id(media) {
+            self.failed
+                .lock()
+                .unwrap()
+                .insert(meta_id);
+        }
+    }
+
+    async fn rate_limit_cooldown(&self) -> std::time::Duration {
+        common::addon_rate_limit(self.addon_id)
+            .remaining_cooldown()
+            .await
     }
 
     fn on_series_done(&self, meta_id: &str) {
         self.medias_cache
+            .lock()
+            .unwrap()
+            .remove(meta_id);
+        self.failed
             .lock()
             .unwrap()
             .remove(meta_id);
@@ -411,7 +466,14 @@ impl TreeAddon for StremioAddon {
         match root.kind {
             db::MediaKind::Series => {
                 let svc = self.service()?;
-                let meta_arc = match fetch_and_cache_meta(&svc, root, &self.medias_cache, ctx).await? {
+                let meta_arc = match fetch_and_cache_meta(
+                    &svc,
+                    root,
+                    &self.medias_cache,
+                    &self.failed,
+                    ctx,
+                )
+                .await? {
                     Some(m) => m,
                     None => return Ok(None),
                 };
@@ -487,6 +549,12 @@ impl TreeAddon for StremioAddon {
             }
             _ => Ok(None),
         }
+    }
+
+    async fn rate_limit_cooldown(&self) -> std::time::Duration {
+        common::addon_rate_limit(self.addon_id)
+            .remaining_cooldown()
+            .await
     }
 }
 
@@ -718,20 +786,13 @@ async fn manifest_meta_type_fallback(
     None
 }
 
-/// Fetch the raw Stremio `Meta` for `media`, storing it in `cache` keyed by
-/// the series-level lookup id. Returns the cached `Arc` immediately if present.
-async fn fetch_and_cache_meta(
-    svc: &stremio_service::StremioService,
-    media: &db::Media,
-    cache: &std::sync::Mutex<
-        std::collections::HashMap<String, Option<Arc<sdks::stremio::Meta>>>,
-    >,
-    ctx: &AppContext,
-) -> Result<Option<Arc<sdks::stremio::Meta>>> {
-    // For Season/Episode, the series meta is cached under the series' ID.
-    // Prefer grandparent lookup so Seasons/Episodes with empty own external_ids
-    // still resolve to the correct cache entry.
-    let meta_id: String = media
+/// The cache/failure-tracking key for `media`: the series-level lookup id.
+/// For Season/Episode, prefer the grandparent so items with empty own
+/// external_ids still resolve to the correct series entry. Shared by
+/// `fetch_and_cache_meta` and `on_meta_fetch_timeout` so both agree on
+/// exactly the same key for the same media.
+fn stremio_meta_lookup_id(media: &db::Media) -> Option<String> {
+    media
         .grandparent
         .as_deref()
         .and_then(|gp| {
@@ -743,6 +804,20 @@ async fn fetch_and_cache_meta(
                 .external_ids
                 .stremio_lookup_id()
         })
+}
+
+/// Fetch the raw Stremio `Meta` for `media`, storing it in `cache` keyed by
+/// the series-level lookup id. Returns the cached `Arc` immediately if present.
+async fn fetch_and_cache_meta(
+    svc: &stremio_service::StremioService,
+    media: &db::Media,
+    cache: &std::sync::Mutex<
+        std::collections::HashMap<String, Option<Arc<sdks::stremio::Meta>>>,
+    >,
+    failed: &std::sync::Mutex<std::collections::HashSet<String>>,
+    ctx: &AppContext,
+) -> Result<Option<Arc<sdks::stremio::Meta>>> {
+    let meta_id: String = stremio_meta_lookup_id(media)
         .ok_or_else(|| anyhow!("no resolvable meta id for {}", media.id))?;
 
     if let Some(cached) = cache
@@ -752,6 +827,17 @@ async fn fetch_and_cache_meta(
         .cloned()
     {
         return Ok(cached);
+    }
+
+    // The series-level fetch for this meta_id already failed once during
+    // this tree walk — don't let every other season/episode under it retry
+    // the identical failing request. Bail immediately instead.
+    if failed
+        .lock()
+        .unwrap()
+        .contains(&meta_id)
+    {
+        return Ok(None);
     }
 
     let meta: Option<Arc<sdks::stremio::Meta>> = if let Some(stored) = ctx
@@ -824,6 +910,10 @@ async fn fetch_and_cache_meta(
         for id in candidate_ids {
             match svc.get_meta(media_type.clone(), id.clone(), None).await {
                 Ok(Some(m)) => {
+                    if m.is_error() {
+                        debug!(id = %id, "stremio meta candidate returned error meta");
+                        continue;
+                    }
                     found_meta = Some(m);
                     break;
                 }
@@ -837,6 +927,18 @@ async fn fetch_and_cache_meta(
 
         if found_meta.is_none() {
             found_meta = manifest_meta_type_fallback(svc, &media_type, &meta_id).await;
+            if let Some(ref m) = found_meta {
+                if m.is_error() {
+                    found_meta = None;
+                }
+            }
+        }
+
+        if found_meta.is_none() {
+            failed
+                .lock()
+                .unwrap()
+                .insert(meta_id.clone());
         }
 
         found_meta.map(Arc::new)
@@ -856,7 +958,35 @@ async fn stremio_meta_fetch(
     medias_cache: &std::sync::Mutex<
         std::collections::HashMap<String, Option<Arc<sdks::stremio::Meta>>>,
     >,
+    failed: &std::sync::Mutex<std::collections::HashSet<String>>,
 ) -> Result<Option<db::Media>> {
+    // This series already failed once this tree walk. Return quietly — the
+    // original failure was already logged; every episode re-surfacing it as
+    // a fresh `error!()` just floods the log without telling anyone anything
+    // new. `Ok(None)` (not an Err) means "this addon has nothing to add",
+    // the same as an addon that never applied to this item at all.
+    //
+    // A cache hit always wins over this, checked first: a concurrent call
+    // for the same series may have already fetched successfully after this
+    // one's own failure was recorded (the two can race, since permits are
+    // shared across an entire batch, not scoped per series), and skipping a
+    // real, cached success because of a marker from an earlier, unrelated
+    // failure would be strictly worse than the redundant lock check.
+    if let Some(meta_id) = stremio_meta_lookup_id(media) {
+        let cached = medias_cache
+            .lock()
+            .unwrap()
+            .contains_key(&meta_id);
+        if !cached
+            && failed
+                .lock()
+                .unwrap()
+                .contains(&meta_id)
+        {
+            return Ok(None);
+        }
+    }
+
     let imdb_id = media
         .grandparent
         .as_deref()
@@ -871,7 +1001,7 @@ async fn stremio_meta_fetch(
             .clone());
     let is_custom = imdb_id.is_none();
 
-    let meta_arc = match fetch_and_cache_meta(svc, media, medias_cache, ctx).await? {
+    let meta_arc = match fetch_and_cache_meta(svc, media, medias_cache, failed, ctx).await? {
         Some(m) => m,
         None => return Ok(None),
     };
@@ -894,15 +1024,11 @@ async fn stremio_meta_fetch(
                         .map(Into::into)
                         .or_else(|| imdb_id.map(Into::into));
             }
-            if meta_patched.is_error() {
-                warn!(
-                    id = %media.id,
-                    error_title = %meta_patched.get_name().unwrap_or_default(),
-                    error_description = %meta_patched.description.as_deref().unwrap_or(""),
-                    "meta addon returned an error, skipping"
-                );
-                return Ok(None);
-            }
+            // No `is_error()` check needed here: `fetch_and_cache_meta` never
+            // returns (or caches) an error-shaped meta — it converts those to
+            // an `Err` before either the cache-hit or fresh-fetch path can
+            // hand one back, so `meta_patched` is always a genuine success by
+            // the time it reaches here.
             let mut found =
                 db::Media::try_from(meta_patched.clone()).map_err(|e| anyhow!(e))?;
             // Preserve the persisted ID — try_from recomputes it from external_ids.
@@ -1947,7 +2073,7 @@ mod tests {
             custom_stremio_type: Some("anime".to_string()),
             ..Default::default()
         });
-        media.grandparent = Some(Box::new(grandparent));
+        media.grandparent = Some(Arc::new(grandparent));
 
         let streams = stremio_streams(&svc, &manifest_url, &media, None, None)
             .await
@@ -1983,7 +2109,7 @@ mod tests {
             custom_stremio_type: Some("anime".to_string()),
             ..Default::default()
         });
-        media.grandparent = Some(Box::new(grandparent));
+        media.grandparent = Some(Arc::new(grandparent));
 
         let streams = stremio_streams(&svc, &manifest_url, &media, None, None)
             .await
