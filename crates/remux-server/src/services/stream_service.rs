@@ -4,7 +4,7 @@ use crate::{
     playback::probe::{probe_stream, resolve_stream_root},
 };
 use remux_sdks::{
-    remux::{MediaStreamType, StreamFilter, VideoRangeType},
+    remux::{MediaStreamType, StreamFilter, VideoContainer, VideoRangeType},
     remuxdb,
 };
 use tracing::debug;
@@ -916,12 +916,20 @@ fn media_info_from_probe(
     let filename = if filename.contains('.') && !filename.ends_with('.') {
         filename
     } else {
-        let ext = match probe.container.as_deref() {
-            Some(c) if c.contains("mkv") || c.contains("matroska") => "mkv",
-            Some(c) if c.contains("mp4") || c.contains("mov") => "mp4",
-            Some(c) if c.contains("webm") => "webm",
-            Some(c) if c.contains("avi") => "avi",
-            Some(c) if c.contains("ts") || c.contains("mpegts") => "ts",
+        let ext = match probe.container.as_ref() {
+            Some(VideoContainer::Mkv) => "mkv",
+            Some(VideoContainer::Mp4 | VideoContainer::M4v | VideoContainer::Mov) => "mp4",
+            Some(VideoContainer::Webm) => "webm",
+            Some(VideoContainer::Avi) => "avi",
+            Some(VideoContainer::Ts) => "ts",
+            Some(VideoContainer::Other(container))
+                if container.contains("mkv") || container.contains("matroska") => "mkv",
+            Some(VideoContainer::Other(container))
+                if container.contains("mp4") || container.contains("mov") => "mp4",
+            Some(VideoContainer::Other(container)) if container.contains("webm") => "webm",
+            Some(VideoContainer::Other(container)) if container.contains("avi") => "avi",
+            Some(VideoContainer::Other(container))
+                if container.contains("ts") || container.contains("mpegts") => "ts",
             _ => "mkv",
         };
         format!("{filename}.{ext}")

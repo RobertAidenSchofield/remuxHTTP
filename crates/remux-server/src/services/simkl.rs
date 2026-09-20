@@ -12,7 +12,7 @@ use remux_sdks::simkl::{
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{AppContext, db};
+use crate::{AppContext, common::{TickUnit, ToRunTimeTicks}, db};
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
@@ -755,12 +755,13 @@ impl SimklService {
         }
 
         let runtime_ticks = media
-            .run_time_ticks
+            .runtime
+            .and_then(|runtime| runtime.to_ticks(TickUnit::Seconds))
             .unwrap_or_else(|| {
                 if media.kind == db::MediaKind::Movie {
-                    crate::common::minutes_to_ticks(120)
+                    120_i64.to_ticks(TickUnit::Minutes).unwrap()
                 } else {
-                    crate::common::minutes_to_ticks(45)
+                    45_i64.to_ticks(TickUnit::Minutes).unwrap()
                 }
             });
 

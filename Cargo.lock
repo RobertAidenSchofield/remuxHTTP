@@ -7060,6 +7060,7 @@ version = "0.0.0"
 dependencies = [
  "moka",
  "nutype",
+ "regex",
  "serde",
  "serde_json",
  "sqlx",
@@ -7137,6 +7138,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
