@@ -1,10 +1,13 @@
-use std::sync::LazyLock;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::Datelike;
+use remux_sdks::remux::SimklPollResultDto;
 use remux_sdks::simkl::{
-    ScrobblePayload, SimklEpisode, SimklIds, SimklMovie, SimklShow, SimklUserSettings,
+    ScrobblePayload, SimklDeviceCodeResponse, SimklEpisode, SimklIds, SimklMovie, SimklShow,
+    SimklTokenErrorResponse, SimklTokenResponse, SimklUserSettings,
 };
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -20,6 +23,20 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 });
 
 const SIMKL_API_BASE: &str = "https://api.simkl.com";
+
+#[derive(Debug, Clone)]
+pub struct PendingDeviceAuth {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub verification_uri_complete: Option<String>,
+    pub expires_at: Instant,
+    pub interval: Duration,
+    pub last_polled_at: Option<Instant>,
+}
+
+static PENDING_DEVICE_AUTHS: LazyLock<Mutex<HashMap<Uuid, PendingDeviceAuth>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub struct SimklService;
 
@@ -442,6 +459,172 @@ impl SimklService {
                 .await
                 .unwrap_or_default();
             anyhow::bail!("Simkl API returned HTTP {status}: {body}")
+        }
+    }
+
+    /// Request a new OAuth2 device code for a user from Simkl API.
+    pub async fn start_device_auth(
+        client_id: &str,
+        user_id: Uuid,
+    ) -> Result<SimklDeviceCodeResponse> {
+        let url = format!("{SIMKL_API_BASE}/oauth2/device");
+        let params = [
+            ("client_id", client_id),
+            ("scope", "media:read media:write"),
+        ];
+
+        let resp = HTTP_CLIENT
+            .post(&url)
+            .form(&params)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("Failed to request device code from Simkl")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Simkl device authorization failed ({status}): {body}");
+        }
+
+        let device_resp: SimklDeviceCodeResponse = resp
+            .json()
+            .await
+            .context("Failed to parse Simkl device code response")?;
+
+        let expires_at = Instant::now() + Duration::from_secs(device_resp.expires_in.max(30));
+        let interval = Duration::from_secs(device_resp.interval.max(5));
+
+        PENDING_DEVICE_AUTHS.lock().unwrap().insert(
+            user_id,
+            PendingDeviceAuth {
+                device_code: device_resp.device_code.clone(),
+                user_code: device_resp.user_code.clone(),
+                verification_uri: device_resp.verification_uri.clone(),
+                verification_uri_complete: device_resp.verification_uri_complete.clone(),
+                expires_at,
+                interval,
+                last_polled_at: None,
+            },
+        );
+
+        Ok(device_resp)
+    }
+
+    /// Poll for token approval from Simkl API.
+    pub async fn poll_device_auth(
+        ctx: &AppContext,
+        client_id: &str,
+        user_id: Uuid,
+    ) -> Result<SimklPollResultDto> {
+        let pending = {
+            let auths = PENDING_DEVICE_AUTHS.lock().unwrap();
+            auths.get(&user_id).cloned()
+        };
+
+        let Some(mut pending) = pending else {
+            return Ok(SimklPollResultDto {
+                status: "expired".to_string(),
+                message: Some("No active login session found. Please start again.".to_string()),
+            });
+        };
+
+        if Instant::now() >= pending.expires_at {
+            PENDING_DEVICE_AUTHS.lock().unwrap().remove(&user_id);
+            return Ok(SimklPollResultDto {
+                status: "expired".to_string(),
+                message: Some("Authorization code expired. Please start again.".to_string()),
+            });
+        }
+
+        if let Some(last) = pending.last_polled_at {
+            if last.elapsed() < pending.interval {
+                return Ok(SimklPollResultDto {
+                    status: "pending".to_string(),
+                    message: None,
+                });
+            }
+        }
+
+        pending.last_polled_at = Some(Instant::now());
+        if let Some(p) = PENDING_DEVICE_AUTHS.lock().unwrap().get_mut(&user_id) {
+            p.last_polled_at = pending.last_polled_at;
+        }
+
+        let url = format!("{SIMKL_API_BASE}/oauth2/token");
+        let params = [
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ("client_id", client_id),
+            ("device_code", &pending.device_code),
+        ];
+
+        let resp = HTTP_CLIENT
+            .post(&url)
+            .form(&params)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("Failed to poll Simkl token endpoint")?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let token_resp: SimklTokenResponse = resp
+                .json()
+                .await
+                .context("Failed to parse Simkl token response")?;
+
+            // Save to DB
+            let mut user_cfg = db::Settings::get_user_simkl_config(&ctx.db, &ctx.config.simkl, &user_id)
+                .await
+                .unwrap_or_default();
+            user_cfg.enabled = true;
+            user_cfg.user_token = token_resp.access_token;
+            db::Settings::set_user_simkl_config(&ctx.db, &ctx.config.simkl, &user_id, user_cfg).await?;
+
+            PENDING_DEVICE_AUTHS.lock().unwrap().remove(&user_id);
+            Ok(SimklPollResultDto {
+                status: "success".to_string(),
+                message: Some("Connected successfully to Simkl!".to_string()),
+            })
+        } else if status.as_u16() == 400 {
+            let err_resp: SimklTokenErrorResponse = resp.json().await.unwrap_or_default();
+            match err_resp.error.as_str() {
+                "authorization_pending" => Ok(SimklPollResultDto {
+                    status: "pending".to_string(),
+                    message: None,
+                }),
+                "slow_down" => {
+                    if let Some(p) = PENDING_DEVICE_AUTHS.lock().unwrap().get_mut(&user_id) {
+                        p.interval += Duration::from_secs(5);
+                    }
+                    Ok(SimklPollResultDto {
+                        status: "pending".to_string(),
+                        message: None,
+                    })
+                }
+                "expired_token" => {
+                    PENDING_DEVICE_AUTHS.lock().unwrap().remove(&user_id);
+                    Ok(SimklPollResultDto {
+                        status: "expired".to_string(),
+                        message: Some("Authorization code expired. Please start again.".to_string()),
+                    })
+                }
+                other => {
+                    let msg = err_resp.error_description.unwrap_or_else(|| other.to_string());
+                    PENDING_DEVICE_AUTHS.lock().unwrap().remove(&user_id);
+                    Ok(SimklPollResultDto {
+                        status: "error".to_string(),
+                        message: Some(msg),
+                    })
+                }
+            }
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            PENDING_DEVICE_AUTHS.lock().unwrap().remove(&user_id);
+            Ok(SimklPollResultDto {
+                status: "error".to_string(),
+                message: Some(format!("Simkl API error ({status}): {body}")),
+            })
         }
     }
 }

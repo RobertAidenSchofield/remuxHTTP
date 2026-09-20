@@ -6042,6 +6042,53 @@ impl Endpoint for TestUserSimklConnection {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SimklDeviceAuthDto {
+    pub user_code: String,
+    pub verification_uri: String,
+    #[serde(default)]
+    pub verification_uri_complete: Option<String>,
+    pub expires_in: u64,
+    pub interval: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SimklPollResultDto {
+    pub status: String,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StartUserSimklDeviceAuth {
+    pub user_id: uuid::Uuid,
+}
+
+impl Endpoint for StartUserSimklDeviceAuth {
+    type Output = SimklDeviceAuthDto;
+    fn path(&self) -> String {
+        format!("/api/users/{}/simkl/device/start", self.user_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PollUserSimklDeviceAuth {
+    pub user_id: uuid::Uuid,
+}
+
+impl Endpoint for PollUserSimklDeviceAuth {
+    type Output = SimklPollResultDto;
+    fn path(&self) -> String {
+        format!("/api/users/{}/simkl/device/poll", self.user_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GetStartupConfiguration;
 

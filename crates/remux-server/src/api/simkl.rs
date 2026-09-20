@@ -6,7 +6,10 @@ use axum::{
 use axum_anyhow::ApiResult as Result;
 use http::StatusCode;
 use remux_macros::{get, post};
-use remux_sdks::remux::{SimklGlobalConfigDto, SimklTestResultDto, SimklUserConfigDto};
+use remux_sdks::remux::{
+    SimklDeviceAuthDto, SimklGlobalConfigDto, SimklPollResultDto, SimklTestResultDto,
+    SimklUserConfigDto,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -161,4 +164,50 @@ pub async fn test_user_simkl_connection(
         })),
     }
 }
+
+/// POST /api/users/:user_id/simkl/device/start: Start Device / PIN flow for user
+#[post("/api/users/{user_id}/simkl/device/start")]
+pub async fn start_user_simkl_device_auth(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(user_id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    require_self_or_admin(user_id, &session)?;
+    let global_cfg =
+        db::Settings::get_simkl_config(&state.ctx.db, &state.ctx.config.simkl).await?;
+    if global_cfg.client_id.is_empty() {
+        return Err(anyhow::anyhow!("Simkl Client ID is not configured in Server Settings")
+            .context_client_error("missing_client_id"));
+    }
+
+    let resp = SimklService::start_device_auth(&global_cfg.client_id, user_id).await?;
+    let dto = SimklDeviceAuthDto {
+        user_code: resp.user_code,
+        verification_uri: resp.verification_uri,
+        verification_uri_complete: resp.verification_uri_complete,
+        expires_in: resp.expires_in,
+        interval: resp.interval,
+    };
+    Ok(Json(dto))
+}
+
+/// POST /api/users/:user_id/simkl/device/poll: Poll Device / PIN flow for user
+#[post("/api/users/{user_id}/simkl/device/poll")]
+pub async fn poll_user_simkl_device_auth(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(user_id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    require_self_or_admin(user_id, &session)?;
+    let global_cfg =
+        db::Settings::get_simkl_config(&state.ctx.db, &state.ctx.config.simkl).await?;
+    if global_cfg.client_id.is_empty() {
+        return Err(anyhow::anyhow!("Simkl Client ID is not configured in Server Settings")
+            .context_client_error("missing_client_id"));
+    }
+
+    let res = SimklService::poll_device_auth(&state.ctx, &global_cfg.client_id, user_id).await?;
+    Ok(Json(res))
+}
+
 

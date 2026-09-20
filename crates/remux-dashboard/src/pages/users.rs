@@ -3,7 +3,8 @@ use dioxus::prelude::*;
 use remux_sdks::remux::{
     AddonDto, AdminSetPassword, CollectionFilter, CreateUser, DeleteUser, FilterGroup,
     FilterMatchMode, GetUserAddons, GetUserSimklConfiguration, GetUsers, ListAddons,
-    SetUserAddons, SimklUserConfigDto, StreamFilter, StreamRule, SubtitleMode,
+    PollUserSimklDeviceAuth, SetUserAddons, SimklDeviceAuthDto, SimklUserConfigDto,
+    StartUserSimklDeviceAuth, StreamFilter, StreamRule, SubtitleMode,
     TestUserSimklConnection, UpdateUser, UpdateUserConfiguration,
     UpdateUserPolicy, UpdateUserSimklConfiguration, UserConfiguration, UserDto,
 };
@@ -428,6 +429,87 @@ pub fn UserForm(
                     Err(e) => simkl_test_result.set(Some((false, e.user_message()))),
                 }
                 simkl_testing.set(false);
+            });
+        }
+    };
+
+    let mut simkl_pin_loading = use_signal(|| false);
+    let mut simkl_pin_info: Signal<Option<SimklDeviceAuthDto>> = use_signal(|| None);
+    let mut simkl_pin_error: Signal<Option<String>> = use_signal(|| None);
+    let mut simkl_polling_active = use_signal(|| false);
+    let mut simkl_show_manual = use_signal(|| false);
+
+    let on_start_pin_flow = {
+        let client = app_state.clone();
+        move |_| {
+            let Some(uid) = edit_user_id else {
+                return;
+            };
+            let c = client.clone();
+            simkl_pin_loading.set(true);
+            simkl_pin_error.set(None);
+            simkl_pin_info.set(None);
+            spawn(async move {
+                match c.execute(StartUserSimklDeviceAuth { user_id: uid }).await {
+                    Ok(auth_info) => {
+                        let interval_secs = auth_info.interval.max(5);
+                        simkl_pin_info.set(Some(auth_info));
+                        simkl_pin_loading.set(false);
+                        simkl_polling_active.set(true);
+
+                        let poll_client = c.clone();
+                        spawn(async move {
+                            while *simkl_polling_active.read() {
+                                gloo_timers::future::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                                if !*simkl_polling_active.read() {
+                                    break;
+                                }
+                                match poll_client.execute(PollUserSimklDeviceAuth { user_id: uid }).await {
+                                    Ok(res) => match res.status.as_str() {
+                                        "success" => {
+                                            simkl_enabled.set(true);
+                                            simkl_has_token.set(true);
+                                            simkl_polling_active.set(false);
+                                            simkl_pin_info.set(None);
+                                            simkl_test_result.set(Some((
+                                                true,
+                                                "Simkl account connected successfully!".to_string(),
+                                            )));
+                                            break;
+                                        }
+                                        "pending" => {}
+                                        "expired" => {
+                                            simkl_polling_active.set(false);
+                                            simkl_pin_info.set(None);
+                                            simkl_pin_error.set(res.message.or_else(|| {
+                                                Some("Code expired. Please try again.".to_string())
+                                            }));
+                                            break;
+                                        }
+                                        _ => {
+                                            simkl_polling_active.set(false);
+                                            simkl_pin_info.set(None);
+                                            simkl_pin_error.set(res.message.or_else(|| {
+                                                Some("Simkl authorization failed.".to_string())
+                                            }));
+                                            break;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        simkl_polling_active.set(false);
+                                        simkl_pin_info.set(None);
+                                        simkl_pin_error.set(Some(e.user_message()));
+                                        break;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        simkl_pin_loading.set(false);
+                        simkl_pin_error.set(Some(e.user_message()));
+                    }
+                }
             });
         }
     };
@@ -971,34 +1053,84 @@ pub fn UserForm(
                     checked: *simkl_enabled.read(),
                     on_change: move |v| simkl_enabled.set(v),
                 }
-                div { class: "field",
-                    label { class: "field-label", r#for: "u-simkl-token", "User Access Token" }
-                    input {
-                        id: "u-simkl-token",
-                        r#type: "password",
-                        class: "field-input",
-                        placeholder: if *simkl_has_token.read() { "Token configured (leave blank to keep)" } else { "Simkl OAuth access token" },
-                        value: "{simkl_token}",
-                        oninput: move |e| simkl_token.set(e.value()),
-                    }
-                    span { class: "field-hint",
-                        "Personal access token generated on Simkl. Used to scrobble playback."
-                    }
-                }
                 if is_edit {
-                    div { style: "display:flex;align-items:center;gap:10px",
+                    if let Some(pin) = simkl_pin_info.read().as_ref() {
+                        let code = pin.user_code.clone();
+                        let approve_url = pin.verification_uri_complete.clone()
+                            .unwrap_or_else(|| format!("{}?user_code={}", pin.verification_uri, pin.user_code));
+                        div { style: "display:flex;flex-direction:column;gap:8px;padding:12px;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.3);border-radius:6px",
+                            div { style: "font-size:0.85rem;color:var(--text-secondary)",
+                                "To connect this user's Simkl account, approve the request using the link below:"
+                            }
+                            div { style: "display:flex;align-items:center;gap:12px;flex-wrap:wrap",
+                                span { style: "font-size:1.2rem;font-weight:bold;letter-spacing:2px;background:rgba(0,0,0,0.2);padding:4px 10px;border-radius:4px;font-family:monospace", "{code}" }
+                                a {
+                                    href: "{approve_url}",
+                                    target: "_blank",
+                                    rel: "noopener noreferrer",
+                                    class: "btn btn-primary",
+                                    "Open Simkl Approval ↗"
+                                }
+                            }
+                            span { style: "font-size:0.75rem;color:var(--text-muted)", "Waiting for approval on Simkl… (this will update automatically)" }
+                        }
+                    } else {
+                        div { style: "display:flex;align-items:center;gap:10px;flex-wrap:wrap",
+                            button {
+                                r#type: "button",
+                                class: "btn btn-primary",
+                                disabled: *simkl_pin_loading.read(),
+                                onclick: on_start_pin_flow,
+                                if *simkl_pin_loading.read() { "Starting…" } else { "Connect with Simkl" }
+                            }
+                            if *simkl_has_token.read() {
+                                button {
+                                    r#type: "button",
+                                    class: "btn btn-ghost",
+                                    disabled: *simkl_testing.read(),
+                                    onclick: on_test_simkl,
+                                    if *simkl_testing.read() { "Testing…" } else { "Test Connection" }
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(err_msg) = simkl_pin_error.read().as_ref() {
+                        span { style: "color:var(--color-danger, #ef4444);font-size:0.85rem", "{err_msg}" }
+                    }
+                    if let Some((success, msg)) = simkl_test_result.read().as_ref() {
+                        span {
+                            style: if *success { "color:var(--color-success, #22c55e);font-size:0.85rem" } else { "color:var(--color-danger, #ef4444);font-size:0.85rem" },
+                            "{msg}"
+                        }
+                    }
+
+                    div { style: "margin-top:2px",
                         button {
                             r#type: "button",
-                            class: "btn btn-ghost",
-                            disabled: *simkl_testing.read(),
-                            onclick: on_test_simkl,
-                            if *simkl_testing.read() { "Testing…" } else { "Test Connection" }
+                            style: "background:none;border:none;color:var(--text-muted, #888);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline",
+                            onclick: move |_| {
+                                let cur = *simkl_show_manual.read();
+                                simkl_show_manual.set(!cur);
+                            },
+                            if *simkl_show_manual.read() { "Hide manual token" } else { "Or enter token manually" }
                         }
-                        if let Some((success, msg)) = simkl_test_result.read().as_ref() {
-                            span {
-                                style: if *success { "color:var(--color-success, #22c55e);font-size:0.85rem" } else { "color:var(--color-danger, #ef4444);font-size:0.85rem" },
-                                "{msg}"
-                            }
+                    }
+                }
+
+                if *simkl_show_manual.read() || !is_edit {
+                    div { class: "field", style: "margin-top:4px",
+                        label { class: "field-label", r#for: "u-simkl-token", "User Access Token" }
+                        input {
+                            id: "u-simkl-token",
+                            r#type: "password",
+                            class: "field-input",
+                            placeholder: if *simkl_has_token.read() { "Token configured (leave blank to keep)" } else { "Simkl OAuth access token" },
+                            value: "{simkl_token}",
+                            oninput: move |e| simkl_token.set(e.value()),
+                        }
+                        span { class: "field-hint",
+                            "Personal access token generated on Simkl. Used to scrobble playback."
                         }
                     }
                 }
