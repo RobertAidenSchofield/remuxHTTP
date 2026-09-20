@@ -1054,25 +1054,29 @@ pub fn UserForm(
                     on_change: move |v| simkl_enabled.set(v),
                 }
                 if is_edit {
-                    if let Some(pin) = simkl_pin_info.read().as_ref() {
-                        let code = pin.user_code.clone();
-                        let approve_url = pin.verification_uri_complete.clone()
-                            .unwrap_or_else(|| format!("{}?user_code={}", pin.verification_uri, pin.user_code));
-                        div { style: "display:flex;flex-direction:column;gap:8px;padding:12px;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.3);border-radius:6px",
-                            div { style: "font-size:0.85rem;color:var(--text-secondary)",
-                                "To connect this user's Simkl account, approve the request using the link below:"
-                            }
-                            div { style: "display:flex;align-items:center;gap:12px;flex-wrap:wrap",
-                                span { style: "font-size:1.2rem;font-weight:bold;letter-spacing:2px;background:rgba(0,0,0,0.2);padding:4px 10px;border-radius:4px;font-family:monospace", "{code}" }
-                                a {
-                                    href: "{approve_url}",
-                                    target: "_blank",
-                                    rel: "noopener noreferrer",
-                                    class: "btn btn-primary",
-                                    "Open Simkl Approval ↗"
+                    if let Some(pin) = simkl_pin_info.read().clone() {
+                        {
+                            let code = pin.user_code;
+                            let approve_url = pin.verification_uri_complete
+                                .unwrap_or_else(|| format!("{}?user_code={}", pin.verification_uri, code));
+                            rsx! {
+                                div { style: "display:flex;flex-direction:column;gap:8px;padding:12px;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.3);border-radius:6px",
+                                    div { style: "font-size:0.85rem;color:var(--text-secondary)",
+                                        "To connect this user's Simkl account, approve the request using the link below:"
+                                    }
+                                    div { style: "display:flex;align-items:center;gap:12px;flex-wrap:wrap",
+                                        span { style: "font-size:1.2rem;font-weight:bold;letter-spacing:2px;background:rgba(0,0,0,0.2);padding:4px 10px;border-radius:4px;font-family:monospace", "{code}" }
+                                        a {
+                                            href: "{approve_url}",
+                                            target: "_blank",
+                                            rel: "noopener noreferrer",
+                                            class: "btn btn-primary",
+                                            "Open Simkl Approval ↗"
+                                        }
+                                    }
+                                    span { style: "font-size:0.75rem;color:var(--text-muted)", "Waiting for approval on Simkl… (this will update automatically)" }
                                 }
                             }
-                            span { style: "font-size:0.75rem;color:var(--text-muted)", "Waiting for approval on Simkl… (this will update automatically)" }
                         }
                     } else {
                         div { style: "display:flex;align-items:center;gap:10px;flex-wrap:wrap",
