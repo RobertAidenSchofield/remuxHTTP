@@ -3,8 +3,8 @@
 </div>
 
 <div align="center">
-  <h1><b>Remux</b></h1>
-  <p><i>Self-hosted media server with a Jellyfin-compatible API</i></p>
+  <h1><b>Remux (remuxHTTP)</b></h1>
+  <p><i>Self-hosted media server with a Jellyfin-compatible API, direct HTTP streaming, and Simkl integration</i></p>
   <a href="https://discord.gg/rEbhk4RBhs">
     <img src="https://img.shields.io/badge/Talk%20on-Discord-brightgreen" alt="Talk on Discord">
   </a>
@@ -14,44 +14,55 @@
 
 ## About this project
 
-This project is a fork of [Remux](https://github.com/lostb1t/remux), a Rust media server that combines Stremio add-ons, local files, WebDAV sources, torrents, and music providers behind a Jellyfin-compatible API.
+This project is an enhanced fork of [Remux](https://github.com/lostb1t/remux), a Rust media server that combines Stremio add-ons, local files, WebDAV sources, torrents, and music providers behind a Jellyfin-compatible API.
 
-The fork keeps Remux's goal of working with existing Jellyfin clients while changing how reachable HTTP streams are delivered: remote players receive the original stream URL and connect to the source directly. Remux remains responsible for metadata, session events, progress, resume points, and watched state, but it does not relay the video bytes when direct playback is safe.
+This fork preserves Remux's core goal of working seamlessly with existing Jellyfin clients while introducing major streaming, networking, and tracking enhancements:
+1. **Direct HTTP Playback**: Reachable HTTP streams are passed straight to players as remote HTTP sources, and `/videos/{id}/stream` issues direct HTTP 302 redirects instead of relaying video bytes through the server.
+2. **Multi-User Simkl Scrobbling**: Native watch history tracking with a 1-click **RFC 8628 Device / PIN flow** (`simkl.com/pin`) right from the web dashboard.
+3. **Client IP Forwarding & LAN Protection**: Propagates each user's real public IP to Stremio add-ons (preventing shared-IP rate limits and debrid geo-blocks) while strictly filtering out private LAN subnets.
+4. **Dynamic Regex Stream Routing**: Syncs and evaluates dynamic regex rules from remote endpoints or local cache to match, filter, and prioritize streams.
+5. **Multi-Provider Metadata Fallbacks**: Intelligent fallback across IMDB, TMDB, TVDB, and Kitsu IDs with manifest prefix filtering.
+6. **Full Upstream Sync (v0.33+)**: Integrates device profile stream sorting, local IPTV/EPG search, and OpenTelemetry tracing.
+
+---
 
 ## Features
 
-- **Jellyfin-compatible clients**: Use Infuse, Swiftfin, Jellyfin for Android, Jellyfin Web, and other compatible clients without client changes.
+- **Jellyfin-compatible clients**: Use Infuse, Swiftfin, Jellyfin for Android/Fire TV, Jellyfin Web, Streamyfin, Findroid, and more without client modifications.
+- **Direct remote playback**: Reachable HTTP streams are returned to players as HTTP media sources, letting clients stream straight from CDNs, debrid providers, or remote hosts.
+- **Multi-user Simkl scrobbling**: Automatically scrobbles watched movies and episodes to Simkl upon reaching the configured threshold, with 1-click PIN authorization.
 - **Multiple content sources**: Combine Stremio add-ons, local files, WebDAV servers, torrents, and remote music sources in one library.
-- **Direct remote playback**: Reachable HTTP streams are returned to players as HTTP media sources so the player connects directly to the CDN, add-on, or debrid provider.
-- **Safe fallback streaming**: Local files, torrents, internal hosts, and other sources continue through Remux's streaming path when a direct URL cannot be safely exposed.
-- **Built-in torrent streaming**: Stream torrents without running a separate torrent client or downloading the complete file first.
-- **Probe data for streams**: Audio and subtitle track metadata is available for streamed content through [RemuxDB](https://remuxdb.1632022.xyz).
-- **Library filtering**: Build dynamic libraries using tags, catalogs, popularity, release year, and per-user visibility rules.
+- **Safe fallback streaming**: Local files, torrents, and internal hosts continue through Remux's proxy streaming path when a direct URL cannot be safely exposed.
+- **Built-in torrent streaming**: Stream torrents without running a separate torrent client or downloading the entire file first.
+- **Probe data & RemuxDB**: Audio, codec, and subtitle track metadata is cached and resolved through [RemuxDB](https://remuxdb.1632022.xyz).
+- **Stream sorting & device capability profiles**: Automatically sorts stream versions by direct-play capability, resolution, and release source.
+- **Client IP forwarding & LAN IP protection**: Forwards individual public client IPs (`X-Forwarded-For`, `X-Real-IP`) to upstream add-ons, while stripping internal LAN IPs and proxy headers to avoid 429 rate limits and debrid account flags.
+- **Dynamic regex stream routing**: Dynamically updates and syncs stream categorization and filtering rules from remote URLs.
+- **IPTV & EPG search**: Full offline, local search across IPTV channels and electronic program guides.
 - **Playback tracking**: Continue watching, resume points, watched state, and play counts remain synchronized across clients.
-- **User management**: Import users and data from an existing Jellyfin server.
-- **Desktop app**: Run the server from a macOS, Linux, or Windows tray application without Docker or a terminal.
-- **Custom dashboard**: Configure the server through a built-in admin interface.
-- **IPTV support**
-- **Client IP forwarding & rate-limit protection**: Forwards individual client IPs (`X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP`) to upstream manifests and add-ons to prevent shared IP rate-limiting (`HTTP 429`) in multi-user setups.
+- **Custom admin dashboard**: Intuitive Dioxus-based web management UI served at `/admin`.
+- **Desktop tray app**: Optional system tray app for macOS, Linux, and Windows.
 
-## Direct streaming architecture
+---
+
+## Direct Streaming Architecture
 
 ### Why the fork changes playback
 
-The original proxy flow made Remux download every remote video and upload it again to the player. That added bandwidth, CPU usage, latency, and buffering on the Remux host, and prevented clients such as Infuse, Fusion, and Strand from using their native remote-streaming behavior.
+The standard proxy flow requires the Remux server to download every video chunk from the remote source and re-upload it to the client. This introduces unnecessary bandwidth, CPU overhead, latency, and buffering on the server, and prevents modern players (Infuse, Swiftfin, Streamyfin) from utilizing their native connection engines.
 
-For an externally reachable HTTP stream, the playback flow is now:
+For an externally reachable HTTP stream:
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Player as Jellyfin Player
     participant Remux as Remux Server
-    participant Source as Remote Source
+    participant Source as Remote Source (CDN/Debrid)
 
     Player->>Remux: POST /Items/{id}/PlaybackInfo
-    Remux-->>Player: MediaSourceInfo with source URL
-    Player->>Source: GET source URL
+    Remux-->>Player: MediaSourceInfo with direct source URL
+    Player->>Source: GET source URL (direct connection)
     Source-->>Player: Video bytes directly
 
     loop Every 5-10 seconds
@@ -60,59 +71,76 @@ sequenceDiagram
     Player->>Remux: POST /sessions/playing/stopped
 ```
 
-When a client still requests `/videos/{id}/stream`, Remux returns a temporary HTTP 302 redirect for a safe external HTTP source. This preserves compatibility with clients that use the Jellyfin stream endpoint while still avoiding a data relay.
+When a player requests `/videos/{id}/stream` directly, Remux issues a temporary **HTTP 302 redirect** directly to the target URL, ensuring complete backwards compatibility without data relaying.
 
-### URL safety
+### URL Safety & Fallback
 
-Remux only forwards HTTP URLs that players can reasonably reach. Internal and private addresses, including loopback, LAN, link-local, CGNAT, Docker, `.local`, `.internal`, and `.lan` hosts, remain on the fallback proxy path.
+Remux only forwards URLs that players can reach externally. Internal addresses—including loopback (`127.0.0.1`), LAN subnets (`192.168.x.x`, `10.x.x.x`, `172.16.x.x`), link-local, CGNAT, Docker internal network aliases, `.local`, and `.internal` hosts—are kept on the internal fallback streaming path.
 
-Some add-ons return container-only URLs. For AIOStreams, Remux rewrites those URLs to the public origin from the add-on's `manifest_url` before exposing them to a player.
+---
 
-### Progress tracking still works
+## Simkl Integration & Scrobbling
 
-Direct playback does not bypass the Jellyfin session API. Players continue to report playback independently of the video connection:
+Remux includes native, multi-user [Simkl](https://simkl.com) scrobbling using Simkl's official **AUTH V2 Device / PIN flow (RFC 8628)**.
 
-| Endpoint                          | Purpose                                        |
-| --------------------------------- | ---------------------------------------------- |
-| `POST /sessions/playing`          | Register playback and its play session.        |
-| `POST /sessions/playing/progress` | Update `PositionTicks` and live session state. |
-| `POST /sessions/playing/stopped`  | Persist the final position and watched state.  |
+### Setting up Simkl:
 
-Because playback metadata still includes the item ID and play session ID, resume points, scrobbling, webhooks, and watched state remain available even when the video bytes come directly from the remote source.
+1. **Global Client ID**:
+   - Go to the Remux Dashboard: **Settings > Simkl**.
+   - Enter your Simkl API **Client ID** (create an app at [simkl.com/settings/developer](https://simkl.com/settings/developer/new/)).
+   - Set the desired completion threshold (default: `80%`).
+2. **User Connection (1-Click PIN Flow)**:
+   - Navigate to **Access > Users** and click **Edit** on any user.
+   - In the **Simkl Scrobbling** section, click **"Connect with Simkl"**.
+   - Click **"Open Simkl Approval ↗"** (or browse to [simkl.com/pin](https://simkl.com/pin) and enter the displayed 8-character code).
+   - Click **Allow** on Simkl.
+   - The dashboard automatically detects the authorization, stores the user token securely, and enables live scrobbling!
 
-### Client IP forwarding & manifest rate-limit protection
+---
 
-When Remux is hosted on a single server or NAS (such as in Docker) for multiple users, each user may configure their own AIOStreams, AIOMetadata, or Stremio add-on manifests with personal scraper and debrid accounts.
+## Client IP Forwarding & Rate-Limit Protection
 
-Without IP forwarding, all manifest queries, catalog lookups, and stream searches originate from the Remux host's single IP address. Upstream providers and scraping services frequently rate-limit such shared-IP traffic (`HTTP 429 Too Many Requests`).
+In multi-user setups running on a shared server, NAS, or Docker host, all outbound requests to Stremio add-ons and debrid providers would normally share the server's single IP address. This causes:
+1. `HTTP 429 Too Many Requests` rate limits from scrapers and metadata add-ons.
+2. Account suspensions or locks from debrid providers enforcing single-IP policies.
 
-To eliminate upstream rate-limiting:
+### How Remux protects you:
+- **Transparent IP Forwarding**: Remux extracts each client's remote IP address (`X-Forwarded-For`, `X-Real-IP`, or connection socket) and forwards it to Stremio SDK calls.
+- **LAN & Private IP Filtering**: Private LAN IPs (such as `192.168.1.50` or loopback) are never forwarded to public providers.
+- **Proxy Header Sanitization**: Untrusted or internal headers like `CF-Connecting-IP` are dropped.
+- **Manifest & Catalog Caching**: Catalogs are cached for 15 minutes and stream candidate lookups are cached for 5 minutes with per-media concurrency locks.
 
-- **Transparent IP Forwarding**: Remux extracts each client's remote IP address from incoming request headers (`X-Forwarded-For`, `X-Real-IP`) or connection socket and attaches them to all outbound Stremio SDK requests (`X-Forwarded-For`, `X-Real-IP`, and `CF-Connecting-IP`). Upstream add-on instances, scrapers, and Cloudflare see each end-user's distinct IP address.
-- **Manifest & Catalog Caching**: Search catalog metadata is cached for 15 minutes (900s) and stream candidate lookups are cached for 5 minutes (300s) with per-media concurrency locking. This eliminates redundant calls to upstream manifests during catalog browsing or rapid stream switching.
-- **Reverse Proxy Support**: If Remux is hosted behind a reverse proxy (e.g. Nginx, Traefik, Caddy, Cloudflare Tunnel, or Synology Reverse Proxy), ensure `X-Forwarded-For` or `X-Real-IP` is passed to Remux so individual user client IPs are preserved and forwarded.
+---
+
+## Dynamic Regex Stream Routing
+
+Configure custom regex patterns to categorize and route streams dynamically. Patterns can be defined in your config or pulled automatically from remote endpoints:
+
+```toml
+[dynamic_regex]
+urls = ["https://example.com/stream-rules.json"]
+sync_interval_secs = 3600
+fallback_cache_path = "/data/regex_cache.json"
+```
+
+---
 
 ## Jellyfin 12 Compatibility
 
-Remux is updated to support the **Jellyfin 12** specification while preserving full backwards compatibility for Jellyfin 10.x players:
+Remux supports the **Jellyfin 12** specification while maintaining backwards compatibility with Jellyfin 10.x:
 
-- **Server Versioning**: Reports version `12.1.0` by default (configurable via `jellyfin_version` in `config.toml` or the `REMUX_JELLYFIN_VERSION` environment variable).
-- **Authentication Schemes**: Supports both modern Jellyfin 12 authorization headers (`Jellyfin Client="...", Device="...", DeviceId="...", Version="...", Token="..."` and standard `Bearer <token>`), as well as legacy `MediaBrowser` and `Emby` schemes for third-party players (Infuse, Swiftfin, Findroid).
-- **Jellyfin Web 12.1**: Bundles and serves the official Jellyfin Web `v12.1` client with the Modern UI layout, improved subtitle rendering, and modern playback controls.
-- **Jellyfin 12 API Stubs**: Includes fallback font (`GET /FallbackFont/Fonts`), backup management (`GET /Backup`, `GET /Backup/Manifest`), and alternate source management (`DELETE /Videos/{id}/AlternateSources`) endpoints expected by modern clients and admin dashboards.
+- **Server Versioning**: Reports version `12.1.0` by default (configurable via `jellyfin_version` in `config.toml` or `REMUX_JELLYFIN_VERSION`).
+- **Modern Authentication**: Supports modern Jellyfin 12 authorization headers (`Jellyfin Client="..."`), standard `Bearer <token>`, and legacy `MediaBrowser`/`Emby` headers.
+- **Bundled Jellyfin Web 12.1**: Serves the official Jellyfin Web client with modern controls, responsive layout, and improved subtitle formatting.
+- **API Stubs**: Includes modern fallback fonts, backup endpoints, and alternate source endpoints.
+
+---
 
 ## Building and Running
 
 ### 1. Docker (Recommended)
 
-To build and run this modified version with Docker, use the included multi-stage build. You do **not** need Rust, Node, or Dioxus installed on your host system—Docker will compile `jellyfin-web`, the admin dashboard, and the server binary inside build containers:
-
-```sh
-# Build from source and run in the background
-docker compose up -d --build
-```
-
-#### Docker Compose Configuration (`docker-compose.yml`)
+Run with Docker Compose using the official automated builds:
 
 ```yaml
 services:
@@ -129,66 +157,38 @@ services:
       - DATA_DIR=/data
 ```
 
-#### Important: Docker Networking with AIOStreams for Direct Play
+```sh
+docker compose up -d
+```
 
-When Remux and AIOStreams are both running in Docker:
-
-- In the Remux Dashboard (`http://<server-ip>:3000/admin`), configure the AIOStreams add-on using your **host's LAN IP or public domain**:
-  ```
-  http://192.168.1.X:3000/manifest.json
-  ```
-  _(Do not use internal Docker aliases like `http://aiostreams:3000/manifest.json`)_.
-- **Why**: Remux automatically rewrites internal container URLs (`aiostreams:...`) to match the manifest URL's origin. Using your LAN IP or domain ensures external players (Infuse, Swiftfin, Strand, Fusion, TV apps) on your network receive a reachable link to stream from directly.
+#### Networking with AIOStreams for Direct Play
+When running Remux alongside AIOStreams in Docker, configure your AIOStreams add-on URL in the Remux dashboard using your **host's LAN IP or public domain** (e.g. `http://192.168.1.100:3000/manifest.json`), **not** internal Docker network names (`http://aiostreams:3000`). This ensures external players receive links they can actually resolve and connect to.
 
 ---
 
-### 2. Local / Native Development Build
-
-To build and develop directly on your host:
+### 2. Local / Native Development
 
 #### Prerequisites
-
 - **Rust toolchain** (1.80+): `rustup default stable`
-- **Node.js** (v22+ / v24+): For building `jellyfin-web` (v12.1)
+- **Node.js** (v22+): For compiling `jellyfin-web`
 - **Cargo Make**: `cargo install --force cargo-make`
 - **Dioxus CLI** (0.7.9): `cargo install dioxus-cli --version 0.7.9 --locked`
 
 #### Setup & Build
+```sh
+cp .env.example .env
+cargo make jellyfin-web
+cargo make build-desktop-dash
 
-1. Copy the example environment file:
+# Run development server with live reload
+cargo make dev
 
-   ```sh
-   cp .env.example .env
-   ```
+# Or build release binary
+cargo build --release -p remux-server
+```
 
-2. Checkout and build `jellyfin-web`:
+---
 
-   ```sh
-   cargo make jellyfin-web
-   ```
+## Contributing & License
 
-3. Build the Dioxus dashboard:
-
-   ```sh
-   cargo make build-desktop-dash
-   ```
-
-4. Build or run the server:
-
-   ```sh
-   # Run development server with live reload
-   cargo make dev
-
-   # Or build release binary
-   cargo build --release -p remux-server
-   ```
-
-5. (Optional) Bundle desktop application (macOS `.dmg`, Linux `.deb`, Windows `.exe`):
-   ```sh
-   cargo make bundle-desktop
-   ```
-
-## Contributing
-
-Issues, feature requests, and pull requests are welcome. Please test changes, explain behavior in human-written issue and pull request descriptions, and disclose significant AI-assisted contributions. Contributors remain responsible for understanding, reviewing, and testing everything they submit.
-
+Issues, feature requests, and pull requests are welcome. Remux is licensed under the GPL-3.0 License.
