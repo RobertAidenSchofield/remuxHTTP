@@ -234,7 +234,7 @@ pub(crate) fn apply_filename_guess(
                             .path_segments()?
                             .next_back()
                             .filter(|s| s.contains('.') && !s.ends_with('.'))
-                            .map(str::to_owned)
+                            .and_then(|s| urlencoding::decode(s).ok().map(|c| c.into_owned()))
                     })
                 })
             })
