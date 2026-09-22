@@ -6234,7 +6234,6 @@ impl Endpoint for TestUserSimklConnection {
     fn body(&self) -> Body {
         let mut map = serde_json::Map::new();
         if let Some(ref t) = self.token {
-            map.insert("userToken".into(), serde_json::Value::String(t.clone()));
             map.insert("user_token".into(), serde_json::Value::String(t.clone()));
         }
         Body::Json(serde_json::Value::Object(map))

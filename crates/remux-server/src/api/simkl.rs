@@ -209,7 +209,7 @@ pub async fn test_user_simkl_connection(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path(user_id): Path<Uuid>,
-    payload: Option<Json<SimklUserConfigDto>>,
+    body: bytes::Bytes,
 ) -> Result<impl IntoResponse> {
     require_self_or_admin(user_id, &session)?;
     let global_cfg = db::Settings::get_simkl_config(
@@ -245,22 +245,31 @@ pub async fn test_user_simkl_connection(
     )
     .await?;
 
-    let token = match payload {
-        Some(Json(p))
-            if !p
-                .user_token
-                .is_empty()
-                && p.user_token != MASKED_TOKEN =>
-        {
-            p.user_token
+    let explicit_token = if !body.is_empty() {
+        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&body) {
+            val.get("user_token")
+                .or_else(|| val.get("userToken"))
+                .and_then(|v| v.as_str())
+                .map(|s| {
+                    s.trim()
+                        .to_string()
+                })
+        } else {
+            None
         }
+    } else {
+        None
+    };
+
+    let token = match explicit_token {
+        Some(t) if !t.is_empty() && t != MASKED_TOKEN => t,
         _ => existing.user_token,
     };
 
     if token.is_empty() {
         return Ok(Json(SimklTestResultDto {
             success: false,
-            message: "No Simkl access token provided".to_string(),
+            message: "No Simkl access token provided or configured".to_string(),
         }));
     }
 
@@ -482,4 +491,43 @@ const SIMKL_AUTH_SUCCESS_HTML: &str = r#"<!DOCTYPE html>
 #[get("/auth/simkl")]
 pub async fn simkl_auth_redirect() -> impl IntoResponse {
     Html(SIMKL_AUTH_SUCCESS_HTML)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_token_flexible() {
+        let extract = |body: &[u8]| -> Option<String> {
+            if !body.is_empty() {
+                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(body) {
+                    val.get("user_token")
+                        .or_else(|| val.get("userToken"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| {
+                            s.trim()
+                                .to_string()
+                        })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        assert_eq!(extract(b""), None);
+        assert_eq!(extract(b"{}"), None);
+        assert_eq!(
+            extract(br#"{"user_token":"tok123"}"#),
+            Some("tok123".into())
+        );
+        assert_eq!(extract(br#"{"userToken":"tok456"}"#), Some("tok456".into()));
+        // Ensure duplicate fields from older clients do not error
+        assert_eq!(
+            extract(br#"{"userToken":"tok789","user_token":"tok789"}"#),
+            Some("tok789".into())
+        );
+    }
 }
