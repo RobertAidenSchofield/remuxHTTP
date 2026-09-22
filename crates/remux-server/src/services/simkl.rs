@@ -631,17 +631,16 @@ impl SimklService {
         );
 
         // 1. Try OAuth 2.0 Device Flow (V2) first (required for all modern Simkl apps)
-        let v2_body = serde_json::json!({
-            "client_id": client_id,
-            "scope": "media:read media:write",
-        });
+        let form_params = [
+            ("client_id", client_id),
+            ("scope", "media:read media:write"),
+        ];
 
         let v2_resp = HTTP_CLIENT
             .post(format!("{SIMKL_API_BASE}/oauth2/device"))
             .header("User-Agent", "remux-server/1.0")
             .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-            .json(&v2_body)
+            .form(&form_params)
             .send()
             .await
             .context("Failed to connect to Simkl API")?;
